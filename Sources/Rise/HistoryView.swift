@@ -3,26 +3,6 @@ import Charts
 import RiseCore
 import SwiftUI
 
-// Chart colors validated for both modes; text never wears them.
-enum Series: CaseIterable {
-    case pushups, situps
-
-    var color: Color {
-        switch self {
-        case .pushups: return dynamicColor(light: 0x2A78D6, dark: 0x3987E5)
-        case .situps: return dynamicColor(light: 0xEB6834, dark: 0xD95926)
-        }
-    }
-
-    func title(_ s: Strings) -> String {
-        self == .pushups ? s.pushupsTitle : s.situpsTitle
-    }
-
-    func value(_ day: DayTotals) -> Int {
-        self == .pushups ? day.pushups : day.situps
-    }
-}
-
 let standColor = dynamicColor(light: 0x6250D6, dark: 0x9085E9)
 
 func dynamicColor(light: UInt32, dark: UInt32) -> Color {
@@ -42,9 +22,11 @@ struct HistoryTab: View {
     var body: some View {
         let s = store.s
         let days = store.history.days(endingOn: store.now, count: span, calendar: store.calendar)
+        let reps = store.plan.filter { $0.exercise?.unit == .reps }
+        let timed = store.plan.filter { $0.exercise?.unit == .seconds }
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(s.chartExercise)
+                Text(reps.isEmpty && !timed.isEmpty ? s.chartTimed : s.chartExercise)
                     .font(.headline)
                 Spacer()
                 Picker(s.period, selection: $span) {
@@ -55,10 +37,18 @@ struct HistoryTab: View {
                 .labelsHidden()
                 .frame(width: 160)
             }
-            ExerciseChart(days: days, span: span, calendar: store.calendar, s: s)
+            if !reps.isEmpty {
+                ExerciseChart(days: days, span: span, calendar: store.calendar, s: s, items: reps, plan: store.plan)
+            }
+            if !timed.isEmpty {
+                if !reps.isEmpty {
+                    Text(s.chartTimed).font(.headline)
+                }
+                ExerciseChart(days: days, span: span, calendar: store.calendar, s: s, items: timed, plan: store.plan)
+            }
             Text(s.chartStandUps)
                 .font(.headline)
-            StandChart(days: days, span: span, calendar: store.calendar, s: s)
+            StandChart(days: days, span: span, calendar: store.calendar, s: s, plan: store.plan)
             Text(s.entries)
                 .font(.headline)
             EntryList(store: store)
@@ -75,6 +65,7 @@ private func axisLabel(_ span: Int, _ lang: Lang) -> Date.FormatStyle {
 private struct Hover: ChartContent {
     let day: DayTotals
     let s: Strings
+    let plan: [PlanItem]
 
     var body: some ChartContent {
         RuleMark(x: .value(s.day, day.day, unit: .day))
@@ -84,7 +75,7 @@ private struct Hover: ChartContent {
                 position: .top, spacing: 4,
                 overflowResolution: AnnotationOverflowResolution(x: .fit(to: .chart), y: .disabled)
             ) {
-                DayTip(day: day, s: s)
+                DayTip(day: day, s: s, plan: plan)
             }
     }
 }
@@ -94,17 +85,17 @@ struct ExerciseChart: View {
     let span: Int
     let calendar: Calendar
     let s: Strings
+    let items: [PlanItem]
+    let plan: [PlanItem]
     @State private var picked: Date?
 
     var body: some View {
         Chart {
             lines
-            if let day = selected { Hover(day: day, s: s) }
+            if let day = selected { Hover(day: day, s: s, plan: plan) }
         }
-        .chartForegroundStyleScale([
-            Series.pushups.title(s): Series.pushups.color, Series.situps.title(s): Series.situps.color,
-        ])
-        .chartSymbolScale([Series.pushups.title(s): .circle, Series.situps.title(s): .square])
+        .chartForegroundStyleScale(domain: items.map { s.name($0.id) }, range: items.map { Palette.color($0.slot) })
+        .chartSymbolScale(domain: items.map { s.name($0.id) }, range: items.map { Palette.shapes[$0.slot % Palette.shapes.count] })
         .chartLegend(position: .top, alignment: .leading, spacing: 8)
         .chartYScale(domain: .automatic(includesZero: true))
         .chartXSelection(value: $picked)
@@ -127,19 +118,21 @@ struct ExerciseChart: View {
         let day: Date
         let series: String
         let value: Int
-        let last: Bool
+        let label: Bool
         let higher: Bool
         var id: String { "\(day.timeIntervalSince1970)-\(series)" }
     }
 
+    // Direct labels on the last day only while two series or fewer share the chart.
     private var points: [Point] {
         let lastDay = days.last?.day
         return days.flatMap { day in
-            Series.allCases.map { series in
-                let other = series == .pushups ? day.situps : day.pushups
+            items.map { item in
+                let value = day.count(item.id)
+                let others = items.filter { $0.id != item.id }.map { day.count($0.id) }
                 return Point(
-                    day: day.day, series: series.title(s), value: series.value(day), last: day.day == lastDay,
-                    higher: series.value(day) >= other)
+                    day: day.day, series: s.name(item.id), value: value,
+                    label: items.count <= 2 && day.day == lastDay, higher: value >= (others.max() ?? 0))
             }
         }
     }
@@ -157,7 +150,7 @@ struct ExerciseChart: View {
                 .symbol(by: .value(s.exercise, point.series))
                 .symbolSize(span > 7 ? 40 : 64)
                 .annotation(position: point.higher ? .top : .bottom, spacing: 4) {
-                    if point.last {
+                    if point.label {
                         Text("\(point.value)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     }
                 }
@@ -173,14 +166,22 @@ struct ExerciseChart: View {
 private struct DayTip: View {
     let day: DayTotals
     let s: Strings
+    let plan: [PlanItem]
 
     var body: some View {
+        let chosen = Set(plan.map(\.id))
+        let others = day.counts.filter { !chosen.contains($0.key) && $0.value > 0 }.keys
+            .sorted { Exercise.order($0) < Exercise.order($1) }
         VStack(alignment: .leading, spacing: 3) {
             Text(Format.dayTitle(day.day, s.lang))
                 .font(.caption.weight(.bold))
-            line(Series.pushups.color, s.pushups(day.pushups))
-            line(Series.situps.color, s.situps(day.situps))
             line(standColor, s.standUps(day.stood))
+            ForEach(plan) { item in
+                line(Palette.color(item.slot), s.amount(item.id, day.count(item.id)))
+            }
+            ForEach(others, id: \.self) { id in
+                line(.secondary, s.amount(id, day.count(id)))
+            }
             if day.missed > 0 {
                 Text(s.missed(day.missed))
                     .font(.caption2)
@@ -205,6 +206,7 @@ struct StandChart: View {
     let span: Int
     let calendar: Calendar
     let s: Strings
+    let plan: [PlanItem]
     @State private var picked: Date?
 
     var body: some View {
@@ -223,7 +225,7 @@ struct StandChart: View {
                         }
                     }
             }
-            if let day = selected { Hover(day: day, s: s) }
+            if let day = selected { Hover(day: day, s: s, plan: plan) }
         }
         .chartYScale(domain: .automatic(includesZero: true))
         .chartXSelection(value: $picked)
@@ -304,7 +306,7 @@ struct EntryList: View {
     }
 
     private func row(_ entry: Entry, _ s: Strings) -> some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             Text(Format.clock.string(from: entry.at))
                 .font(.system(.callout, design: .rounded).weight(.semibold))
                 .monospacedDigit()
@@ -314,9 +316,12 @@ struct EntryList: View {
                 .help(entry.source == .alarm ? s.fromReminder : s.byHand)
                 .frame(width: 18)
             if entry.answered {
-                mark(entry.stood, entry.stood ? s.stood : s.didNotStand)
-                mark(entry.pushups > 0, entry.pushups > 0 ? s.pushups(entry.pushups) : s.noPushups)
-                mark(entry.situps > 0, entry.situps > 0 ? s.situps(entry.situps) : s.noSitups)
+                Flow(spacing: 10, lineSpacing: 4) {
+                    mark(entry.stood, entry.stood ? s.stood : s.didNotStand)
+                    ForEach(entry.ordered, id: \.0) { id, value in
+                        mark(value > 0, value > 0 ? s.amount(id, value) : s.none(id))
+                    }
+                }
             } else {
                 Label(s.noAnswer, systemImage: "questionmark.circle")
                     .foregroundStyle(.secondary)

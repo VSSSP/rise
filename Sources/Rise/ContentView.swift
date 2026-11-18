@@ -18,6 +18,14 @@ struct ContentView: View {
     @State var tab: Tab = .today
 
     var body: some View {
+        if store.setupDone {
+            tabs
+        } else {
+            SetupView(store: store)
+        }
+    }
+
+    private var tabs: some View {
         VStack(alignment: .leading, spacing: 16) {
             Picker(store.s.section, selection: $tab) {
                 ForEach(Tab.allCases, id: \.self) { Text($0.title(store.s)).tag($0) }
@@ -27,7 +35,11 @@ struct ContentView: View {
             switch tab {
             case .today: TodayTab(store: store)
             case .history: HistoryTab(store: store)
-            case .settings: SettingsForm(store: store, music: store.music)
+            case .settings:
+                ScrollView {
+                    SettingsForm(store: store, music: store.music).padding(.trailing, 12)
+                }
+                .frame(height: 600)
             }
             if let problem = store.problem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
@@ -40,20 +52,13 @@ struct ContentView: View {
     }
 }
 
-let sunrise = LinearGradient(
-    colors: [
-        Color(red: 0.16, green: 0.17, blue: 0.42), Color(red: 0.62, green: 0.25, blue: 0.52),
-        Color(red: 0.95, green: 0.42, blue: 0.40), Color(red: 1.0, green: 0.64, blue: 0.33),
-    ],
-    startPoint: .topLeading, endPoint: .bottomTrailing)
-
 struct TodayTab: View {
     @ObservedObject var store: Store
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             StatusCard(store: store)
-            TotalsRow(totals: store.todayTotals, s: store.s)
+            TotalsRow(store: store)
             if !store.todaySlots.isEmpty {
                 TodayGrid(store: store)
             }
@@ -81,7 +86,7 @@ struct StatusCard: View {
             Text(detail)
                 .font(.callout)
                 .opacity(0.92)
-            Text(store.s.eachReminder(store.targets.pushups, store.targets.situps))
+            Text(store.eachReminder)
                 .font(.footnote)
                 .opacity(0.85)
                 .padding(.top, 4)
@@ -89,7 +94,7 @@ struct StatusCard: View {
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
-        .background(sunrise, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(store.theme.gradient, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private var caption: String {
@@ -110,27 +115,34 @@ struct StatusCard: View {
 }
 
 struct TotalsRow: View {
-    let totals: DayTotals
-    let s: Strings
+    @ObservedObject var store: Store
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
 
     var body: some View {
-        HStack(spacing: 10) {
-            tile(s.standUpsTitle, totals.stood, "figure.stand", standColor)
-            tile(s.pushupsTitle, totals.pushups, "figure.strengthtraining.functional", Series.pushups.color)
-            tile(s.situpsTitle, totals.situps, "figure.core.training", Series.situps.color)
+        let s = store.s
+        let totals = store.todayTotals
+        LazyVGrid(columns: columns, spacing: 10) {
+            tile(s.standUpsTitle, "\(totals.stood)", "figure.stand", standColor)
+            ForEach(store.plan) { item in
+                tile(
+                    s.name(item.id), s.counter(item.id, totals.count(item.id)), item.exercise?.image ?? "figure.walk",
+                    Palette.color(item.slot))
+            }
         }
     }
 
-    private func tile(_ title: String, _ value: Int, _ symbol: String, _ mark: Color) -> some View {
+    private func tile(_ title: String, _ value: String, _ symbol: String, _ mark: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: symbol)
                     .foregroundStyle(mark)
                 Text(title)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .font(.caption.weight(.semibold))
-            Text("\(value)")
+            Text(value)
                 .font(.system(size: 28, weight: .bold, design: .rounded))
                 .monospacedDigit()
         }
@@ -183,7 +195,7 @@ struct TodayGrid: View {
             .foregroundStyle(next ? Color.white : (quiet && entry == nil ? Color.secondary : Color.primary))
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(next ? AnyShapeStyle(sunrise) : AnyShapeStyle(Color.primary.opacity(quiet ? 0.04 : 0.08)))
+                    .fill(next ? AnyShapeStyle(store.theme.gradient) : AnyShapeStyle(Color.primary.opacity(quiet ? 0.04 : 0.08)))
             )
         }
         .buttonStyle(.plain)
@@ -195,7 +207,8 @@ struct TodayGrid: View {
         let s = store.s
         guard let entry else { return skipped ? s.bringBack : s.skipThis }
         guard entry.answered else { return s.noAnswer }
-        return "\(entry.stood ? s.stood : s.didNotStand) · \(s.pushups(entry.pushups)) · \(s.situps(entry.situps))"
+        return ([entry.stood ? s.stood : s.didNotStand] + entry.ordered.map { id, n in n > 0 ? s.amount(id, n) : s.none(id) })
+            .joined(separator: " · ")
     }
 }
 
@@ -264,20 +277,21 @@ struct SettingsForm: View {
                 }
             }
             Divider()
-            Text(s.setTitle)
+            ExercisePicker(store: store)
+            Divider()
+            Text(s.reminderTitle)
                 .font(.headline)
-            Stepper(value: $store.targets.pushups, in: 1...200) {
-                Text(s.pushups(store.targets.pushups))
+            Picker(s.alertLabel, selection: $store.alertStyle) {
+                ForEach(AlertStyle.allCases) { Text(s.alert($0)).tag($0) }
             }
-            Stepper(value: $store.targets.situps, in: 1...200) {
-                Text(s.situps(store.targets.situps))
-            }
-            Text(s.setHint)
+            .frame(maxWidth: 360)
+            Text(s.alertHint(store.alertStyle))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Divider()
+                .fixedSize(horizontal: false, vertical: true)
             Text(s.musicTitle)
-                .font(.headline)
+                .font(.subheadline.weight(.semibold))
+                .padding(.top, 4)
             Toggle(s.playMusic, isOn: $store.sound)
             HStack {
                 Picker(s.music, selection: $store.tuneID) {
@@ -297,6 +311,33 @@ struct SettingsForm: View {
             .disabled(!store.sound)
             .accessibilityLabel(s.volume)
             Divider()
+            Text(s.lookTitle)
+                .font(.headline)
+            HStack(spacing: 10) {
+                Text(s.themeLabel)
+                ForEach(Theme.allCases) { theme in
+                    Button {
+                        store.theme = theme
+                    } label: {
+                        Circle()
+                            .fill(theme.gradient)
+                            .frame(width: 26, height: 26)
+                            .overlay(Circle().strokeBorder(Color.primary.opacity(store.theme == theme ? 0.9 : 0.15), lineWidth: store.theme == theme ? 2.5 : 1))
+                            .padding(3)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(s.theme(theme))
+                    .accessibilityLabel(s.theme(theme))
+                }
+                Spacer(minLength: 0)
+                Text(s.theme(store.theme)).font(.caption).foregroundStyle(.secondary)
+            }
+            Picker(s.appearanceLabel, selection: $store.appearance) {
+                ForEach(AppearanceChoice.allCases) { Text(s.appearance($0)).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 320)
             Picker(s.language, selection: $store.language) {
                 Text(s.automatic).tag(LanguageChoice.system)
                 Text("English").tag(LanguageChoice.en)
@@ -354,5 +395,148 @@ struct SettingsForm: View {
             set: { on in
                 if on { store.hours.weekdays.insert(day) } else { store.hours.weekdays.remove(day) }
             })
+    }
+}
+
+struct ExercisePicker: View {
+    @ObservedObject var store: Store
+
+    var body: some View {
+        let s = store.s
+        VStack(alignment: .leading, spacing: 10) {
+            Text(s.setTitle)
+                .font(.headline)
+            if store.plan.isEmpty {
+                Text(s.onlyStandUp)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(store.plan) { item in
+                if let exercise = item.exercise {
+                    HStack(spacing: 10) {
+                        Image(systemName: exercise.image)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Palette.color(item.slot))
+                            .frame(width: 24)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(s.name(item.id)).font(.body.weight(.semibold))
+                            Text(s.muscles(item.id)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 6)
+                        Stepper(value: store.target(item.id), in: exercise.range, step: exercise.step) {
+                            Text(s.counter(item.id, item.target))
+                                .font(.system(.body, design: .rounded).weight(.semibold))
+                                .monospacedDigit()
+                        }
+                        .fixedSize()
+                        Button {
+                            store.removeExercise(item.id)
+                        } label: {
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(s.removeExercise)
+                    }
+                    .padding(8)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+            }
+            Menu {
+                ForEach(Exercise.catalog.filter { item in !store.plan.contains { $0.id == item.id } }) { exercise in
+                    Button {
+                        store.addExercise(exercise.id)
+                    } label: {
+                        Label("\(s.name(exercise.id)) · \(s.muscles(exercise.id))", systemImage: exercise.image)
+                    }
+                }
+            } label: {
+                Label(s.addExercise, systemImage: "plus.circle.fill")
+            }
+            .fixedSize()
+            .disabled(store.plan.count >= Palette.limit)
+            Text(s.setHint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+// The first window a new owner sees: every choice in one place, then the reminders start.
+struct SetupView: View {
+    @ObservedObject var store: Store
+
+    var body: some View {
+        let s = store.s
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(s.welcomeTitle)
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                Text(s.welcomeBody)
+                    .font(.callout)
+                    .opacity(0.92)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(store.theme.gradient, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            ScrollView {
+                SettingsForm(store: store, music: store.music).padding(.trailing, 12)
+            }
+            .frame(height: 520)
+            Button {
+                store.finishSetup()
+            } label: {
+                Label(s.startRise, systemImage: "figure.stand").frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+}
+
+// Places its children left to right and wraps them onto new lines when the width runs out.
+struct Flow: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var line: CGFloat = 0
+        var widest: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                y += line + lineSpacing
+                x = 0
+                line = 0
+            }
+            x += size.width + spacing
+            line = max(line, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: proposal.width ?? widest, height: y + line)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var line: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                y += line + lineSpacing
+                x = bounds.minX
+                line = 0
+            }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            line = max(line, size.height)
+        }
     }
 }

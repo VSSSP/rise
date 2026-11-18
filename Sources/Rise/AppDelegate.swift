@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.make(store.s)
+        store.applyAppearance()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -31,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .store(in: &watchers)
         store.start()
         if CommandLine.arguments.contains("--ring-test") { store.test() }
-        if !store.welcomed {
+        if !store.welcomed || !store.setupDone {
             store.welcomed = true
             showWindow()
         }

@@ -1,15 +1,11 @@
 import AppKit
 import RiseCore
+import SwiftUI
 import ServiceManagement
 import UniformTypeIdentifiers
 
 enum LoginState {
     case on, off, needsApproval, unavailable
-}
-
-struct Targets: Codable, Equatable {
-    var pushups = 10
-    var situps = 15
 }
 
 // What the check-in card is asking about: an alarm, a log by hand, or a test that records nothing.
@@ -23,6 +19,8 @@ struct Ring: Equatable, Identifiable {
     var slot: Date
     var title: String
     var body: String
+    // Set when the owner asks to see a discreet alarm.
+    var opened = false
 }
 
 @MainActor
@@ -30,8 +28,8 @@ final class Store: ObservableObject {
     @Published var hours: WorkHours {
         didSet { defaults.set(try? JSONEncoder().encode(hours), forKey: Keys.hours) }
     }
-    @Published var targets: Targets {
-        didSet { defaults.set(try? JSONEncoder().encode(targets), forKey: Keys.targets) }
+    @Published var plan: [PlanItem] {
+        didSet { defaults.set(try? JSONEncoder().encode(plan), forKey: Keys.plan) }
     }
     @Published var sound: Bool {
         didSet { defaults.set(sound, forKey: Keys.sound) }
@@ -51,6 +49,18 @@ final class Store: ObservableObject {
     @Published var language: LanguageChoice {
         didSet { defaults.set(language.rawValue, forKey: Keys.language) }
     }
+    @Published var theme: Theme {
+        didSet { defaults.set(theme.rawValue, forKey: Keys.theme) }
+    }
+    @Published var appearance: AppearanceChoice {
+        didSet {
+            defaults.set(appearance.rawValue, forKey: Keys.appearance)
+            applyAppearance()
+        }
+    }
+    @Published var alertStyle: AlertStyle {
+        didSet { defaults.set(alertStyle.rawValue, forKey: Keys.alertStyle) }
+    }
     @Published private(set) var pausedDay: DayKey?
     @Published private(set) var skipped: Set<Date>
     @Published private(set) var now = Date()
@@ -58,9 +68,10 @@ final class Store: ObservableObject {
     @Published private(set) var history = History()
     @Published private(set) var problem: String?
     @Published private(set) var ringing: Ring?
+    @Published private(set) var setupDone: Bool
 
     let music = MusicPlayer()
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private let file: HistoryFile
     private let forcedLang: Lang?
     private var lastRung: Date?
@@ -72,6 +83,7 @@ final class Store: ObservableObject {
     private enum Keys {
         static let hours = "hours"
         static let targets = "targets"
+        static let plan = "exercises"
         static let sound = "sound"
         static let tune = "tune"
         static let volume = "volume"
@@ -81,16 +93,24 @@ final class Store: ObservableObject {
         static let lastRung = "lastRung"
         static let loginSetUp = "loginSetUp"
         static let welcomed = "welcomedMenuBar"
+        static let setupDone = "setupDone"
+        static let theme = "theme"
+        static let appearance = "appearance"
+        static let alertStyle = "alertStyle"
     }
 
-    init(file: HistoryFile = .standard, lang: Lang? = nil) {
+    init(file: HistoryFile = .standard, lang: Lang? = nil, defaults: UserDefaults = .standard) {
         self.file = file
+        self.defaults = defaults
         forcedLang = lang
         let calendar = Calendar.autoupdatingCurrent
         hours = defaults.data(forKey: Keys.hours).flatMap { try? JSONDecoder().decode(WorkHours.self, from: $0) }
             ?? .standard
-        targets = defaults.data(forKey: Keys.targets).flatMap { try? JSONDecoder().decode(Targets.self, from: $0) }
-            ?? Targets()
+        plan = Store.loadPlan(defaults)
+        setupDone = defaults.bool(forKey: Keys.setupDone)
+        theme = defaults.string(forKey: Keys.theme).flatMap(Theme.init(rawValue:)) ?? .sunrise
+        appearance = defaults.string(forKey: Keys.appearance).flatMap(AppearanceChoice.init(rawValue:)) ?? .system
+        alertStyle = defaults.string(forKey: Keys.alertStyle).flatMap(AlertStyle.init(rawValue:)) ?? .card
         sound = defaults.object(forKey: Keys.sound) as? Bool ?? true
         tuneID = defaults.string(forKey: Keys.tune) ?? Tunes.defaultID
         volume = defaults.object(forKey: Keys.volume) as? Double ?? 0.7
@@ -119,6 +139,15 @@ final class Store: ObservableObject {
     }
     var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev" }
 
+    func applyAppearance() {
+        NSApp.appearance = appearance.appearance
+    }
+
+    func finishSetup() {
+        setupDone = true
+        defaults.set(true, forKey: Keys.setupDone)
+    }
+
     var welcomed: Bool {
         get { defaults.bool(forKey: Keys.welcomed) }
         set { defaults.set(newValue, forKey: Keys.welcomed) }
@@ -131,7 +160,47 @@ final class Store: ObservableObject {
 
     var todaySummary: String {
         let day = todayTotals
-        return s.todaySummary(day.stood, day.pushups, day.situps)
+        return s.todaySummary(day.stood, plan.map { s.amount($0.id, day.count($0.id)) })
+    }
+
+    var eachReminder: String {
+        s.eachReminder(plan.map { s.amount($0.id, $0.target) })
+    }
+
+    func color(_ exercise: String) -> Color {
+        plan.first { $0.id == exercise }.map { Palette.color($0.slot) } ?? Color.secondary
+    }
+
+    func addExercise(_ id: String) {
+        guard plan.count < Palette.limit, !plan.contains(where: { $0.id == id }), let exercise = Exercise.find(id) else {
+            return
+        }
+        let used = Set(plan.map(\.slot))
+        let slot = (0..<Palette.limit).first { !used.contains($0) } ?? 0
+        plan.append(PlanItem(id: id, target: exercise.target, slot: slot))
+    }
+
+    func removeExercise(_ id: String) {
+        plan.removeAll { $0.id == id }
+    }
+
+    func target(_ id: String) -> Binding<Int> {
+        Binding(
+            get: { self.plan.first { $0.id == id }?.target ?? 0 },
+            set: { value in
+                guard let index = self.plan.firstIndex(where: { $0.id == id }) else { return }
+                self.plan[index].target = value
+            })
+    }
+
+    // The saved set; before exercises could be chosen there were only push-ups and sit-ups.
+    private static func loadPlan(_ defaults: UserDefaults) -> [PlanItem] {
+        if let data = defaults.data(forKey: Keys.plan), let plan = try? JSONDecoder().decode([PlanItem].self, from: data) {
+            return plan
+        }
+        struct Old: Codable { var pushups = 10; var situps = 15 }
+        let old = defaults.data(forKey: Keys.targets).flatMap { try? JSONDecoder().decode(Old.self, from: $0) } ?? Old()
+        return [PlanItem(id: "pushups", target: old.pushups, slot: 0), PlanItem(id: "situps", target: old.situps, slot: 1)]
     }
 
     func start() {
@@ -175,13 +244,13 @@ final class Store: ObservableObject {
     }
 
     // Records the answer of the open card; a test records nothing.
-    func checkIn(stood: Bool, pushups: Int, situps: Int) {
+    func checkIn(stood: Bool, counts: [String: Int]) {
         guard let ring = ringing else { return }
         switch ring.kind {
         case .alarm:
-            record(Entry(at: ring.slot, source: .alarm, stood: stood, pushups: pushups, situps: situps))
+            record(Entry(at: ring.slot, source: .alarm, stood: stood, counts: counts))
         case .manual:
-            record(Entry(at: Date(), source: .manual, stood: stood, pushups: pushups, situps: situps))
+            record(Entry(at: Date(), source: .manual, stood: stood, counts: counts))
         case .test:
             break
         }
@@ -201,12 +270,18 @@ final class Store: ObservableObject {
     }
 
     func logNow() {
-        if let ringing, ringing.kind == .alarm { return present(ringing) }
+        if var ringing, ringing.kind == .alarm {
+            ringing.opened = true
+            return present(ringing)
+        }
         present(Ring(kind: .manual, slot: Date(), title: s.manualTitle, body: s.manualBody))
     }
 
     func test() {
-        if let ringing, ringing.kind == .alarm { return present(ringing) }
+        if var ringing, ringing.kind == .alarm {
+            ringing.opened = true
+            return present(ringing)
+        }
         present(Ring(kind: .test, slot: Date(), title: s.testTitle, body: s.testBody))
     }
 
@@ -278,9 +353,9 @@ final class Store: ObservableObject {
     }
 
     // Appends one log straight to the file; used by the command line before the app runs.
-    static func log(pushups: Int, situps: Int, file: HistoryFile = .standard) throws -> DayTotals {
+    static func log(_ counts: [String: Int], file: HistoryFile = .standard) throws -> DayTotals {
         var history = try file.load()
-        history.add(Entry(at: Date(), source: .manual, stood: true, pushups: pushups, situps: situps))
+        history.add(Entry(at: Date(), source: .manual, stood: true, counts: counts))
         try file.save(history)
         return history.totals(on: Date(), calendar: .autoupdatingCurrent)
     }

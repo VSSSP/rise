@@ -1,12 +1,14 @@
 import AppKit
 import SwiftUI
 
-// A floating card under the menu bar that stays until it is answered, over every Space and app.
+// The check-in card: in a corner, in the middle or over a dimmed screen, and it stays until answered.
 @MainActor
 final class CheckInPanel {
     private let store: Store
     private var panel: NSPanel?
+    private var backdrop: NSWindow?
     private var shown: UUID?
+    private var played: UUID?
     private var chime: Timer?
 
     init(store: Store) {
@@ -15,19 +17,28 @@ final class CheckInPanel {
 
     func update(_ ring: Ring?) {
         guard let ring else {
-            if shown != nil { store.music.stop() }
+            if shown != nil || played != nil { store.music.stop() }
+            played = nil
             return hide()
         }
+        if played != ring.id {
+            played = ring.id
+            if ring.kind != .manual { store.playAlarm() }
+            scheduleChime(for: ring)
+        }
+        let style = store.alertStyle
+        if style == .discreet, ring.kind == .alarm, !ring.opened { return hide(keepMusic: true) }
         let panel = self.panel ?? make()
         if shown != ring.id {
             shown = ring.id
             let host = FirstClickHostingView(rootView: CheckInView(store: store, ring: ring))
             panel.contentView = host
             panel.setContentSize(host.fittingSize)
-            if ring.kind != .manual { store.playAlarm() }
-            scheduleChime(for: ring)
         }
-        place(panel)
+        let screen = currentScreen()
+        place(panel, style: style, on: screen)
+        let dim = style == .fullscreen && ring.kind != .manual
+        if dim, let screen { showBackdrop(on: screen) } else { backdrop?.orderOut(nil) }
         let fresh = !panel.isVisible
         if fresh { panel.alphaValue = 0 }
         panel.orderFrontRegardless()
@@ -39,10 +50,13 @@ final class CheckInPanel {
         }
     }
 
-    private func hide() {
-        chime?.invalidate()
-        chime = nil
+    private func hide(keepMusic: Bool = false) {
+        if !keepMusic {
+            chime?.invalidate()
+            chime = nil
+        }
         shown = nil
+        backdrop?.orderOut(nil)
         guard let panel, panel.isVisible else { return }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.2
@@ -61,7 +75,7 @@ final class CheckInPanel {
         guard ring.kind == .alarm else { return }
         chime = Timer.scheduledTimer(withTimeInterval: 180, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.shown == ring.id else { return }
+                guard let self, self.played == ring.id, self.store.ringing?.id == ring.id else { return }
                 self.store.playAlarm()
             }
         }
@@ -84,12 +98,35 @@ final class CheckInPanel {
         return panel
     }
 
-    private func place(_ panel: NSPanel) {
+    private func showBackdrop(on screen: NSScreen) {
+        let window = backdrop ?? {
+            let window = NSWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isOpaque = false
+            window.backgroundColor = NSColor.black.withAlphaComponent(0.6)
+            window.level = .statusBar
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            window.isReleasedWhenClosed = false
+            window.hidesOnDeactivate = false
+            backdrop = window
+            return window
+        }()
+        window.setFrame(screen.frame, display: false)
+        window.orderFrontRegardless()
+    }
+
+    private func currentScreen() -> NSScreen? {
         let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+    }
+
+    private func place(_ panel: NSPanel, style: AlertStyle, on screen: NSScreen?) {
         guard let visible = screen?.visibleFrame else { return }
         let size = panel.frame.size
-        panel.setFrameOrigin(NSPoint(x: visible.maxX - size.width - 14, y: visible.maxY - size.height - 10))
+        if style == .card || style == .discreet {
+            panel.setFrameOrigin(NSPoint(x: visible.maxX - size.width - 14, y: visible.maxY - size.height - 10))
+        } else {
+            panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2 + 40))
+        }
     }
 }
 
@@ -101,22 +138,28 @@ final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-private let ink = Color(red: 0.13, green: 0.14, blue: 0.36)
+private struct InkKey: EnvironmentKey {
+    static let defaultValue = Theme.sunrise.ink
+}
+
+extension EnvironmentValues {
+    var ink: Color {
+        get { self[InkKey.self] }
+        set { self[InkKey.self] = newValue }
+    }
+}
 
 struct CheckInView: View {
     @ObservedObject var store: Store
     let ring: Ring
     @State private var stood: Bool?
-    @State private var didPushups: Bool?
-    @State private var didSitups: Bool?
-    @State private var pushups: Int
-    @State private var situps: Int
+    @State private var answers: [String: Bool] = [:]
+    @State private var counts: [String: Int]
 
     init(store: Store, ring: Ring) {
         self.store = store
         self.ring = ring
-        _pushups = State(initialValue: store.targets.pushups)
-        _situps = State(initialValue: store.targets.situps)
+        _counts = State(initialValue: Dictionary(store.plan.map { ($0.id, $0.target) }) { first, _ in first })
     }
 
     private var s: Strings { store.s }
@@ -125,9 +168,12 @@ struct CheckInView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
             VStack(spacing: 8) {
-                row(s.stoodRow, "figure.stand", answer: $stood, count: nil)
-                row(s.pushupsTitle, "figure.strengthtraining.functional", answer: $didPushups, count: $pushups)
-                row(s.situpsTitle, "figure.core.training", answer: $didSitups, count: $situps)
+                row(s.stoodRow, "figure.stand", answer: $stood, exercise: nil)
+                ForEach(store.plan) { item in
+                    if let exercise = item.exercise {
+                        row(s.name(item.id), exercise.image, answer: answer(item.id), exercise: exercise)
+                    }
+                }
             }
             .padding(10)
             .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -136,8 +182,9 @@ struct CheckInView: View {
         .foregroundStyle(.white)
         .padding(18)
         .frame(width: 480)
-        .background(sunrise, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(store.theme.gradient, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.28), lineWidth: 1))
+        .environment(\.ink, store.theme.ink)
     }
 
     private var header: some View {
@@ -163,7 +210,15 @@ struct CheckInView: View {
         }
     }
 
-    private func row(_ title: String, _ symbol: String, answer: Binding<Bool?>, count: Binding<Int>?) -> some View {
+    private func answer(_ id: String) -> Binding<Bool?> {
+        Binding(get: { answers[id] }, set: { answers[id] = $0 })
+    }
+
+    private func count(_ id: String) -> Binding<Int> {
+        Binding(get: { counts[id] ?? 0 }, set: { counts[id] = $0 })
+    }
+
+    private func row(_ title: String, _ symbol: String, answer: Binding<Bool?>, exercise: Exercise?) -> some View {
         HStack(spacing: 8) {
             Image(systemName: symbol)
                 .font(.system(size: 17, weight: .semibold))
@@ -171,9 +226,10 @@ struct CheckInView: View {
             Text(title)
                 .font(.body.weight(.semibold))
                 .lineLimit(1)
+                .minimumScaleFactor(0.85)
             Spacer(minLength: 4)
-            if let count {
-                Counter(value: count)
+            if let exercise {
+                Counter(value: count(exercise.id), exercise: exercise, label: s.counter(exercise.id, counts[exercise.id] ?? 0))
             }
             Choice(label: s.done, symbol: "checkmark", on: answer.wrappedValue == true) { answer.wrappedValue = true }
             Choice(label: s.notDone, symbol: "xmark", on: answer.wrappedValue == false) {
@@ -183,27 +239,29 @@ struct CheckInView: View {
         .frame(minHeight: 34)
     }
 
-    private var complete: Bool { stood != nil && didPushups != nil && didSitups != nil }
+    private var complete: Bool { stood != nil && store.plan.allSatisfy { answers[$0.id] != nil } }
 
     private var footer: some View {
         HStack(spacing: 8) {
             if ring.kind == .alarm {
                 PanelButton(label: s.snooze, style: .quiet) { store.snooze() }
                 PanelButton(label: s.didNothing, style: .quiet) {
-                    store.checkIn(stood: false, pushups: 0, situps: 0)
+                    store.checkIn(stood: false, counts: Dictionary(store.plan.map { ($0.id, 0) }) { first, _ in first })
                 }
             } else {
                 PanelButton(label: s.cancel, style: .quiet) { store.cancel() }
             }
             Spacer(minLength: 4)
             PanelButton(label: s.save, style: .plain) {
-                store.checkIn(stood: stood == true, pushups: didPushups == true ? pushups : 0, situps: didSitups == true ? situps : 0)
+                let done = store.plan.map { ($0.id, answers[$0.id] == true ? counts[$0.id] ?? 0 : 0) }
+                store.checkIn(stood: stood == true, counts: Dictionary(done) { first, _ in first })
             }
             .disabled(!complete)
             .opacity(complete ? 1 : 0.45)
             .help(complete ? s.saveHelp : s.markEachLine)
             PanelButton(label: s.allDone, style: .strong) {
-                store.checkIn(stood: true, pushups: pushups, situps: situps)
+                let all = store.plan.map { ($0.id, counts[$0.id] ?? $0.target) }
+                store.checkIn(stood: true, counts: Dictionary(all) { first, _ in first })
             }
         }
     }
@@ -211,18 +269,21 @@ struct CheckInView: View {
 
 private struct Counter: View {
     @Binding var value: Int
+    let exercise: Exercise
+    let label: String
 
     var body: some View {
         HStack(spacing: 0) {
-            step("minus") { value = max(1, value - 1) }
-            Text("\(value)")
+            step("minus") { value = max(exercise.range.lowerBound, value - exercise.step) }
+            Text(label)
                 .font(.system(.body, design: .rounded).weight(.bold))
                 .monospacedDigit()
-                .frame(minWidth: 30)
-            step("plus") { value = min(500, value + 1) }
+                .frame(minWidth: exercise.unit == .seconds ? 44 : 30)
+            step("plus") { value = min(exercise.range.upperBound, value + exercise.step) }
         }
         .padding(2)
         .background(.white.opacity(0.16), in: Capsule())
+        .fixedSize()
     }
 
     private func step(_ symbol: String, _ action: @escaping () -> Void) -> some View {
@@ -237,6 +298,7 @@ private struct Counter: View {
 }
 
 private struct Choice: View {
+    @Environment(\.ink) private var ink
     let label: String
     let symbol: String
     let on: Bool
@@ -259,6 +321,8 @@ private struct Choice: View {
 }
 
 private struct PanelButton: View {
+    @Environment(\.ink) private var ink
+
     enum Style {
         case quiet, plain, strong
     }

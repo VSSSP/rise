@@ -29,11 +29,108 @@ struct Strings {
         return "\(n) \(n == 1 ? pair.0 : pair.1)"
     }
 
-    func pushups(_ n: Int) -> String { count(n, ("push-up", "push-ups"), ("flexão", "flexões")) }
-    func situps(_ n: Int) -> String { count(n, ("sit-up", "sit-ups"), ("abdominal", "abdominais")) }
     func standUps(_ n: Int) -> String { count(n, ("stand-up", "stand-ups"), ("levantada", "levantadas")) }
     func missed(_ n: Int) -> String {
         count(n, ("reminder with no answer", "reminders with no answer"), ("aviso sem resposta", "avisos sem resposta"))
+    }
+
+    private struct Words {
+        let title: String
+        let one: String
+        let many: String
+        let muscles: String
+    }
+
+    private func words(_ id: String) -> Words {
+        let en = lang == .en
+        switch id {
+        case "pushups":
+            return en
+                ? Words(title: "Push-ups", one: "push-up", many: "push-ups", muscles: "chest, shoulders and triceps")
+                : Words(title: "Flexões", one: "flexão", many: "flexões", muscles: "peito, ombros e tríceps")
+        case "situps":
+            return en
+                ? Words(title: "Sit-ups", one: "sit-up", many: "sit-ups", muscles: "abs")
+                : Words(title: "Abdominais", one: "abdominal", many: "abdominais", muscles: "abdômen")
+        case "squats":
+            return en
+                ? Words(title: "Squats", one: "squat", many: "squats", muscles: "legs and glutes")
+                : Words(title: "Agachamentos", one: "agachamento", many: "agachamentos", muscles: "pernas e glúteos")
+        case "lunges":
+            return en
+                ? Words(title: "Lunges", one: "lunge", many: "lunges", muscles: "legs and glutes")
+                : Words(title: "Afundos", one: "afundo", many: "afundos", muscles: "pernas e glúteos")
+        case "glutebridges":
+            return en
+                ? Words(title: "Glute bridges", one: "glute bridge", many: "glute bridges", muscles: "glutes and lower back")
+                : Words(
+                    title: "Elevações de quadril", one: "elevação de quadril", many: "elevações de quadril",
+                    muscles: "glúteos e lombar")
+        case "calfraises":
+            return en
+                ? Words(title: "Calf raises", one: "calf raise", many: "calf raises", muscles: "calves")
+                : Words(
+                    title: "Elevações de panturrilha", one: "elevação de panturrilha", many: "elevações de panturrilha",
+                    muscles: "panturrilhas")
+        case "dips":
+            return en
+                ? Words(title: "Chair dips", one: "chair dip", many: "chair dips", muscles: "triceps")
+                : Words(
+                    title: "Mergulhos na cadeira", one: "mergulho na cadeira", many: "mergulhos na cadeira",
+                    muscles: "tríceps")
+        case "jumpingjacks":
+            return en
+                ? Words(title: "Jumping jacks", one: "jumping jack", many: "jumping jacks", muscles: "cardio and legs")
+                : Words(title: "Polichinelos", one: "polichinelo", many: "polichinelos", muscles: "cardio e pernas")
+        case "burpees":
+            return en
+                ? Words(title: "Burpees", one: "burpee", many: "burpees", muscles: "whole body")
+                : Words(title: "Burpees", one: "burpee", many: "burpees", muscles: "corpo inteiro")
+        case "mountainclimbers":
+            return en
+                ? Words(title: "Mountain climbers", one: "mountain climber", many: "mountain climbers", muscles: "core and cardio")
+                : Words(title: "Escaladores", one: "escalador", many: "escaladores", muscles: "core e cardio")
+        case "legraises":
+            return en
+                ? Words(title: "Leg raises", one: "leg raise", many: "leg raises", muscles: "lower abs")
+                : Words(title: "Elevações de pernas", one: "elevação de pernas", many: "elevações de pernas", muscles: "abdômen inferior")
+        case "supermans":
+            return en
+                ? Words(title: "Supermans", one: "superman", many: "supermans", muscles: "lower back")
+                : Words(title: "Super-homens", one: "super-homem", many: "super-homens", muscles: "lombar")
+        case "plank":
+            return en
+                ? Words(title: "Plank", one: "plank", many: "plank", muscles: "core")
+                : Words(title: "Prancha", one: "prancha", many: "prancha", muscles: "core e abdômen")
+        case "wallsit":
+            return en
+                ? Words(title: "Wall sit", one: "wall sit", many: "wall sit", muscles: "thighs")
+                : Words(title: "Cadeirinha na parede", one: "cadeirinha", many: "cadeirinha", muscles: "coxas")
+        case "stretch":
+            return en
+                ? Words(title: "Stretching", one: "stretching", many: "stretching", muscles: "back and neck")
+                : Words(title: "Alongamento", one: "alongamento", many: "alongamento", muscles: "costas e pescoço")
+        default:
+            return Words(title: id, one: id, many: id, muscles: "")
+        }
+    }
+
+    func name(_ id: String) -> String { words(id).title }
+    func muscles(_ id: String) -> String { words(id).muscles }
+
+    func amount(_ id: String, _ n: Int) -> String {
+        let w = words(id)
+        if Exercise.find(id)?.unit == .seconds { return t("\(n) s of \(w.one)", "\(n) s de \(w.one)") }
+        return "\(n) \(n == 1 ? w.one : w.many)"
+    }
+
+    func none(_ id: String) -> String {
+        let w = words(id)
+        return t("no \(w.many)", "sem \(w.many)")
+    }
+
+    func counter(_ id: String, _ n: Int) -> String {
+        Exercise.find(id)?.unit == .seconds ? "\(n) s" : "\(n)"
     }
 
     var tabToday: String { t("Today", "Hoje") }
@@ -41,8 +138,6 @@ struct Strings {
     var tabSettings: String { t("Settings", "Ajustes") }
     var section: String { t("Section", "Seção") }
 
-    var pushupsTitle: String { t("Push-ups", "Flexões") }
-    var situpsTitle: String { t("Sit-ups", "Abdominais") }
     var standUpsTitle: String { t("Stand-ups", "Levantadas") }
     var stoodRow: String { t("Stood up", "Levantei") }
 
@@ -51,8 +146,8 @@ struct Strings {
     func nextReminder(_ time: String, _ when: String) -> String {
         t("Next reminder: \(time) (\(when))", "Próximo aviso: \(time) (\(when))")
     }
-    func todaySummary(_ stood: Int, _ pushups: Int, _ situps: Int) -> String {
-        "\(t("Today", "Hoje")): \(standUps(stood)) · \(self.pushups(pushups)) · \(self.situps(situps))"
+    func todaySummary(_ stood: Int, _ parts: [String]) -> String {
+        "\(t("Today", "Hoje")): " + ([standUps(stood)] + parts).joined(separator: " · ")
     }
 
     var alarmTitle: String { t("Time to stand up", "Hora de levantar") }
@@ -110,10 +205,11 @@ struct Strings {
         t("The interval does not fit between start and end.", "O intervalo não cabe entre o início e o fim.")
     }
     var pickADay: String { t("Pick at least one day in Settings.", "Escolha pelo menos um dia em Ajustes.") }
-    func eachReminder(_ pushups: Int, _ situps: Int) -> String {
-        t(
-            "Each reminder: stand up, \(self.pushups(pushups)) and \(self.situps(situps)).",
-            "A cada aviso: levantar, \(self.pushups(pushups)) e \(self.situps(situps)).")
+    func eachReminder(_ parts: [String]) -> String {
+        let list = ListFormatter()
+        list.locale = lang.locale
+        let all = list.string(from: [t("stand up", "levantar")] + parts) ?? ""
+        return t("Each reminder: \(all).", "A cada aviso: \(all).")
     }
 
     var todayReminders: String { t("Today's reminders", "Avisos de hoje") }
@@ -128,8 +224,6 @@ struct Strings {
     var noAnswer: String { t("No answer", "Sem resposta") }
     var stood: String { t("stood up", "levantou") }
     var didNotStand: String { t("did not stand", "não levantou") }
-    var noPushups: String { t("no push-ups", "sem flexões") }
-    var noSitups: String { t("no sit-ups", "sem abdominais") }
 
     var logNow: String { t("Log a set", "Registrar agora") }
     var skipNext: String { t("Skip the next", "Pular o próximo") }
@@ -146,9 +240,61 @@ struct Strings {
             ? ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] : ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
         return zip([2, 3, 4, 5, 6, 7, 1], names).map { ($0, $1) }
     }
-    var setTitle: String { t("The set of each reminder", "Série de cada aviso") }
+    var setTitle: String { t("Exercises of each reminder", "Exercícios de cada aviso") }
     var setHint: String {
-        t("You can change the number on the card before marking Done.", "No aviso dá para mudar o número antes de marcar Fiz.")
+        t(
+            "Up to 7 exercises. On the card you can change the number before marking Done.",
+            "Até 7 exercícios. No aviso dá para mudar o número antes de marcar Fiz.")
+    }
+    var lookTitle: String { t("Look", "Aparência") }
+    var themeLabel: String { t("Theme", "Tema") }
+    var appearanceLabel: String { t("Mode", "Modo") }
+    func theme(_ theme: Theme) -> String {
+        switch theme {
+        case .sunrise: return t("Sunrise", "Nascer do sol")
+        case .ocean: return t("Ocean", "Oceano")
+        case .forest: return t("Forest", "Floresta")
+        case .grape: return t("Grape", "Uva")
+        case .graphite: return t("Graphite", "Grafite")
+        case .ember: return t("Ember", "Brasa")
+        }
+    }
+    func appearance(_ choice: AppearanceChoice) -> String {
+        switch choice {
+        case .system: return t("Automatic", "Automático")
+        case .light: return t("Light", "Claro")
+        case .dark: return t("Dark", "Escuro")
+        }
+    }
+    var alertLabel: String { t("Alert", "Alerta") }
+    func alert(_ style: AlertStyle) -> String {
+        switch style {
+        case .card: return t("Card in the corner", "Cartão no canto")
+        case .center: return t("Card in the middle", "Cartão no meio da tela")
+        case .fullscreen: return t("Full screen", "Tela cheia")
+        case .discreet: return t("Discreet: icon and music only", "Discreto: só ícone e música")
+        }
+    }
+    func alertHint(_ style: AlertStyle) -> String {
+        switch style {
+        case .card: return t("A card under the menu bar that stays until you answer.", "Um cartão embaixo da barra de menus que fica até você responder.")
+        case .center: return t("The same card in the middle of the screen.", "O mesmo cartão no meio da tela.")
+        case .fullscreen: return t("The screen dims behind the card until you answer or snooze.", "A tela escurece atrás do cartão até você responder ou adiar.")
+        case .discreet: return t("The menu bar icon turns orange and the music plays; open the card from the icon.", "O ícone da barra fica laranja e a música toca; o cartão abre pelo ícone.")
+        }
+    }
+    var reminderTitle: String { t("Reminder", "Aviso") }
+    var welcomeTitle: String { t("Welcome to Rise", "Bem-vindo ao Rise") }
+    var welcomeBody: String {
+        t(
+            "Rise reminds you to stand up and do a quick set of exercises. Choose your hours, your exercises and your music. Everything can be changed later in Settings.",
+            "O Rise lembra você de levantar e fazer uma série rápida de exercícios. Escolha o seu horário, os seus exercícios e a sua música. Dá para mudar tudo depois em Ajustes.")
+    }
+    var startRise: String { t("Start Rise", "Começar") }
+    var addExercise: String { t("Add exercise", "Adicionar exercício") }
+    var removeExercise: String { t("Remove from the set", "Tirar da série") }
+    var onlyStandUp: String {
+        t("No exercises: the reminder only asks you to stand up.", "Sem exercícios: o aviso só pede para levantar.")
     }
     var musicTitle: String { t("Reminder music", "Música do aviso") }
     var playMusic: String { t("Play music on the reminder", "Tocar música no aviso") }
@@ -168,7 +314,8 @@ struct Strings {
     }
     var showHistoryFile: String { t("Show the history file", "Mostrar o arquivo do histórico") }
 
-    var chartExercise: String { t("Push-ups and sit-ups per day", "Flexões e abdominais por dia") }
+    var chartExercise: String { t("Reps per day", "Repetições por dia") }
+    var chartTimed: String { t("Seconds per day", "Segundos por dia") }
     var chartStandUps: String { t("Stand-ups per day", "Levantadas por dia") }
     var period: String { t("Period", "Período") }
     var sevenDays: String { t("7 days", "7 dias") }

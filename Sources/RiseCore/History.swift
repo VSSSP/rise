@@ -11,31 +11,69 @@ public struct Entry: Codable, Equatable, Identifiable, Sendable {
     public var source: Source
     public var answered: Bool
     public var stood: Bool
-    public var pushups: Int
-    public var situps: Int
+    // Reps or seconds per exercise id; 0 means the exercise was asked and not done.
+    public var counts: [String: Int]
 
     public init(
-        id: UUID = UUID(), at: Date, source: Source, answered: Bool = true, stood: Bool, pushups: Int, situps: Int
+        id: UUID = UUID(), at: Date, source: Source, answered: Bool = true, stood: Bool, counts: [String: Int]
     ) {
         self.id = id
         self.at = at
         self.source = source
         self.answered = answered
         self.stood = stood
-        self.pushups = max(0, pushups)
-        self.situps = max(0, situps)
+        self.counts = counts.mapValues { max(0, $0) }
+    }
+
+    public init(at: Date, source: Source, stood: Bool, pushups: Int, situps: Int) {
+        self.init(at: at, source: source, stood: stood, counts: ["pushups": pushups, "situps": situps])
     }
 
     public static func missed(at: Date) -> Entry {
-        Entry(at: at, source: .alarm, answered: false, stood: false, pushups: 0, situps: 0)
+        Entry(at: at, source: .alarm, answered: false, stood: false, counts: [:])
+    }
+
+    public func count(_ exercise: String) -> Int {
+        counts[exercise] ?? 0
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, at, source, answered, stood, counts, pushups, situps
+    }
+
+    // Reads the first file format too, which kept push-ups and sit-ups in fields of their own.
+    public init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        id = try box.decode(UUID.self, forKey: .id)
+        at = try box.decode(Date.self, forKey: .at)
+        source = try box.decode(Source.self, forKey: .source)
+        answered = try box.decode(Bool.self, forKey: .answered)
+        stood = try box.decode(Bool.self, forKey: .stood)
+        if let counts = try box.decodeIfPresent([String: Int].self, forKey: .counts) {
+            self.counts = counts
+        } else {
+            var legacy: [String: Int] = [:]
+            if let value = try box.decodeIfPresent(Int.self, forKey: .pushups), answered { legacy["pushups"] = value }
+            if let value = try box.decodeIfPresent(Int.self, forKey: .situps), answered { legacy["situps"] = value }
+            counts = legacy
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: CodingKeys.self)
+        try box.encode(id, forKey: .id)
+        try box.encode(at, forKey: .at)
+        try box.encode(source, forKey: .source)
+        try box.encode(answered, forKey: .answered)
+        try box.encode(stood, forKey: .stood)
+        try box.encode(counts, forKey: .counts)
     }
 }
 
 public struct DayTotals: Equatable, Identifiable, Sendable {
     public let day: Date
     public var stood = 0
-    public var pushups = 0
-    public var situps = 0
+    public var counts: [String: Int] = [:]
     public var answered = 0
     public var missed = 0
 
@@ -43,6 +81,10 @@ public struct DayTotals: Equatable, Identifiable, Sendable {
 
     public init(day: Date) {
         self.day = day
+    }
+
+    public func count(_ exercise: String) -> Int {
+        counts[exercise] ?? 0
     }
 }
 
@@ -74,8 +116,7 @@ public struct History: Equatable, Sendable {
         var totals = DayTotals(day: calendar.startOfDay(for: day))
         for entry in entries(on: day, calendar: calendar) {
             if entry.stood { totals.stood += 1 }
-            totals.pushups += entry.pushups
-            totals.situps += entry.situps
+            for (exercise, value) in entry.counts { totals.counts[exercise, default: 0] += value }
             guard entry.source == .alarm else { continue }
             if entry.answered { totals.answered += 1 } else { totals.missed += 1 }
         }
@@ -130,7 +171,7 @@ public struct HistoryFile: Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Payload(version: 1, entries: history.entries)).write(to: url, options: .atomic)
+        try encoder.encode(Payload(version: 2, entries: history.entries)).write(to: url, options: .atomic)
     }
 
     // Moves an unreadable file aside so a fresh history never writes over it; returns the new path.

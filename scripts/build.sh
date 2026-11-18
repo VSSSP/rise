@@ -1,18 +1,27 @@
 #!/bin/bash
-# Builds build/Rise.app and the drag-to-install dist/Rise-<version>.dmg: scripts/build.sh
+# Builds dist/Rise-<version>.dmg and leaves no other Rise.app on disk: scripts/build.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
-APP=build/Rise.app
 DMG=dist/Rise-$VERSION.dmg
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/rise-build.XXXXXX")
+APP=$STAGE/Rise.app
+forget() { [ -d "$1" ] && "$LSREGISTER" -u "$1" >/dev/null 2>&1; rm -rf "$1"; }
+trap 'forget "$APP"; forget "$STAGE/dmg/Rise.app"; rm -rf "$STAGE"' EXIT
+
+forget build/Rise.app
+forget build/dmg/Rise.app
+rm -rf build/dmg
 
 swift test
 swift build -c release --product Rise
-rm -rf "$APP" build/AppIcon.iconset build/dmg
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/AppIcon.iconset dist
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build dist
 cp "$(swift build -c release --show-bin-path)/Rise" "$APP/Contents/MacOS/Rise"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
+rm -rf build/AppIcon.iconset
+mkdir -p build/AppIcon.iconset
 swift scripts/make-icon.swift build/icon-1024.png
 for size in 16 32 128 256 512; do
   sips -z "$size" "$size" build/icon-1024.png --out "build/AppIcon.iconset/icon_${size}x${size}.png" >/dev/null
@@ -25,13 +34,13 @@ codesign --force --sign - "$APP"
 codesign --verify --strict "$APP"
 "$APP/Contents/MacOS/Rise" --self-test
 
-mkdir -p build/dmg
-cp -R "$APP" build/dmg/
-ln -s /Applications build/dmg/Applications
-cp "$APP/Contents/Resources/AppIcon.icns" build/dmg/.VolumeIcon.icns
-SetFile -c icnC build/dmg/.VolumeIcon.icns
-SetFile -a C build/dmg
+mkdir -p "$STAGE/dmg"
+cp -R "$APP" "$STAGE/dmg/"
+ln -s /Applications "$STAGE/dmg/Applications"
+cp "$APP/Contents/Resources/AppIcon.icns" "$STAGE/dmg/.VolumeIcon.icns"
+SetFile -c icnC "$STAGE/dmg/.VolumeIcon.icns"
+SetFile -a C "$STAGE/dmg"
 rm -f "$DMG"
-hdiutil create -volname Rise -srcfolder build/dmg -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname Rise -srcfolder "$STAGE/dmg" -ov -format UDZO "$DMG" >/dev/null
 hdiutil verify "$DMG" >/dev/null
 echo "$DMG"

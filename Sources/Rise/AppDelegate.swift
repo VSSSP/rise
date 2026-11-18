@@ -1,22 +1,40 @@
 import AppKit
+import Combine
+import RiseCore
 import SwiftUI
-import UserNotifications
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let store = Store()
-    private let relay = NotificationRelay()
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    let store: Store
     private var window: NSWindow?
+    private var statusItem: NSStatusItem?
+    private lazy var checkIn = CheckInPanel(store: store)
+    private var watchers: Set<AnyCancellable> = []
 
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        relay.onAction = { [weak self] action in self?.store.handle(action: action) }
-        UNUserNotificationCenter.current().delegate = relay
+    init(store: Store? = nil) {
+        self.store = store ?? Store()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.make()
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        let menu = NSMenu()
+        menu.delegate = self
+        item.menu = menu
+        item.button?.toolTip = "Rise"
+        statusItem = item
+        store.$ringing
+            .sink { [weak self] ring in self?.checkIn.update(ring) }
+            .store(in: &watchers)
+        Publishers.CombineLatest(store.$ringing, store.$pausedDay)
+            .sink { [weak self] ring, paused in self?.paintIcon(ringing: ring != nil, paused: paused) }
+            .store(in: &watchers)
         store.start()
-        showWindow()
+        if CommandLine.arguments.contains("--ring-test") { store.test() }
+        if !store.welcomed {
+            store.welcomed = true
+            showWindow()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -24,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { showWindow() }
+        showWindow()
         return true
     }
 
@@ -32,31 +50,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.refreshSystemState()
     }
 
-    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
-        let menu = NSMenu()
-        let status = NSMenuItem(title: store.dockStatus, action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        store.tick()
+        fill(menu)
+    }
+
+    func fill(_ menu: NSMenu) {
+        menu.removeAllItems()
+        for line in [store.menuStatus, store.todaySummary] {
+            let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
-        menu.addItem(item("Levantei", #selector(standUp)))
-        let skip = item("Pular o próximo", #selector(skipNext))
+        if store.ringing?.kind == .alarm {
+            menu.addItem(item("Responder o aviso…", #selector(logNow)))
+        } else {
+            menu.addItem(item("Registrar agora…", #selector(logNow)))
+        }
+        let skip = item("Pular o próximo aviso", #selector(skipNext))
         skip.isEnabled = store.next != nil
         menu.addItem(skip)
         menu.addItem(item(store.isPausedToday ? "Retomar hoje" : "Pausar hoje", #selector(togglePause)))
         menu.addItem(item("Testar aviso", #selector(test)))
-        return menu
+        menu.addItem(.separator())
+        menu.addItem(item("Abrir o Rise…", #selector(openWindow), key: ","))
+        menu.addItem(item("Sair do Rise", #selector(quit), key: "q"))
     }
 
-    private func item(_ title: String, _ action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
         return item
     }
 
-    @objc private func standUp() { store.standUp() }
+    @objc private func logNow() { store.logNow() }
     @objc private func skipNext() { store.skipNext() }
     @objc private func togglePause() { store.togglePauseToday() }
     @objc private func test() { store.test() }
+    @objc private func openWindow() { showWindow() }
+    @objc private func quit() { NSApp.terminate(nil) }
+
+    private func paintIcon(ringing: Bool, paused: DayKey?) {
+        guard let button = statusItem?.button else { return }
+        let pausedToday = paused == store.today
+        let symbol = ringing ? "figure.wave" : (pausedToday ? "moon.zzz" : "figure.stand")
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: ringing ? .bold : .regular)
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Rise")?.withSymbolConfiguration(config)
+        image?.isTemplate = true
+        button.image = image
+        button.contentTintColor = ringing ? .systemOrange : nil
+    }
 
     private func showWindow() {
         if window == nil {
@@ -70,28 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.setFrameAutosaveName("RiseMain")
             self.window = window
         }
-        window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
-    }
-}
-
-final class NotificationRelay: NSObject, UNUserNotificationCenterDelegate {
-    var onAction: (@MainActor (String) -> Void)?
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-    ) {
-        completionHandler([.banner, .list, .sound])
-    }
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
-        withCompletionHandler completionHandler: @escaping () -> Void
-    ) {
-        let action = response.actionIdentifier
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onAction?(action) } }
-        completionHandler()
+        window?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -103,18 +127,15 @@ enum MainMenu {
             withTitle: "Sobre o Rise", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Ocultar o Rise", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let others = appMenu.addItem(
-            withTitle: "Ocultar Outros", action: #selector(NSApplication.hideOtherApplications(_:)),
-            keyEquivalent: "h")
-        others.keyEquivalentModifierMask = [.command, .option]
-        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Encerrar o Rise", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let editMenu = NSMenu(title: "Editar")
+        editMenu.addItem(withTitle: "Copiar", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Colar", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         let windowMenu = NSMenu(title: "Janela")
         windowMenu.addItem(withTitle: "Minimizar", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Fechar", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         let bar = NSMenu()
-        for (title, menu) in [("Rise", appMenu), ("Janela", windowMenu)] {
+        for (title, menu) in [("Rise", appMenu), ("Editar", editMenu), ("Janela", windowMenu)] {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.submenu = menu
             bar.addItem(item)

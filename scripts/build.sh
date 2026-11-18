@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds dist/Rise-<version>.dmg and leaves no other Rise.app on disk: scripts/build.sh
+# Builds dist/Rise-<version>.dmg, no stray Rise.app; --install swaps the installed app in place
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
@@ -15,9 +15,11 @@ forget build/dmg/Rise.app
 rm -rf build/dmg
 
 swift test
-swift build -c release --product Rise
+swift build -c release --product Rise --triple arm64-apple-macosx14.0
+swift build -c release --product Rise --triple x86_64-apple-macosx14.0
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build dist
-cp "$(swift build -c release --show-bin-path)/Rise" "$APP/Contents/MacOS/Rise"
+lipo -create .build/arm64-apple-macosx/release/Rise .build/x86_64-apple-macosx/release/Rise \
+  -output "$APP/Contents/MacOS/Rise"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
 rm -rf build/AppIcon.iconset
@@ -44,3 +46,12 @@ rm -f "$DMG"
 hdiutil create -volname Rise -srcfolder "$STAGE/dmg" -ov -format UDZO "$DMG" >/dev/null
 hdiutil verify "$DMG" >/dev/null
 echo "$DMG"
+
+if [ "${1:-}" = "--install" ]; then
+  osascript -e 'tell application id "com.vsssp.rise" to quit' >/dev/null 2>&1 || true
+  for _ in $(seq 20); do pgrep -f /Applications/Rise.app/Contents/MacOS/Rise >/dev/null || break; sleep 0.5; done
+  rm -rf /Applications/Rise.app
+  ditto "$APP" /Applications/Rise.app
+  open /Applications/Rise.app
+  echo "installed /Applications/Rise.app $VERSION"
+fi

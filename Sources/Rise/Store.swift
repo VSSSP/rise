@@ -1,6 +1,7 @@
 import AppKit
 import RiseCore
 import ServiceManagement
+import UniformTypeIdentifiers
 
 enum LoginState {
     case on, off, needsApproval, unavailable
@@ -11,7 +12,7 @@ struct Targets: Codable, Equatable {
     var situps = 15
 }
 
-// What the check-in panel is asking about: an alarm, a log by hand, or a test that records nothing.
+// What the check-in card is asking about: an alarm, a log by hand, or a test that records nothing.
 struct Ring: Equatable, Identifiable {
     enum Kind: Equatable {
         case alarm, manual, test
@@ -35,16 +36,33 @@ final class Store: ObservableObject {
     @Published var sound: Bool {
         didSet { defaults.set(sound, forKey: Keys.sound) }
     }
+    @Published var tuneID: String {
+        didSet {
+            defaults.set(tuneID, forKey: Keys.tune)
+            if music.isPlaying { previewTune(restart: true) }
+        }
+    }
+    @Published var volume: Double {
+        didSet {
+            defaults.set(volume, forKey: Keys.volume)
+            music.setVolume(Float(volume))
+        }
+    }
+    @Published var language: LanguageChoice {
+        didSet { defaults.set(language.rawValue, forKey: Keys.language) }
+    }
     @Published private(set) var pausedDay: DayKey?
     @Published private(set) var skipped: Set<Date>
     @Published private(set) var now = Date()
     @Published private(set) var login: LoginState = .off
     @Published private(set) var history = History()
-    @Published private(set) var historyProblem: String?
+    @Published private(set) var problem: String?
     @Published private(set) var ringing: Ring?
 
+    let music = MusicPlayer()
     private let defaults = UserDefaults.standard
     private let file: HistoryFile
+    private let forcedLang: Lang?
     private var lastRung: Date?
     private var snoozed: (ring: Ring, until: Date)?
     private var timer: Timer?
@@ -55,6 +73,9 @@ final class Store: ObservableObject {
         static let hours = "hours"
         static let targets = "targets"
         static let sound = "sound"
+        static let tune = "tune"
+        static let volume = "volume"
+        static let language = "language"
         static let pausedDay = "pausedDay"
         static let skipped = "skipped"
         static let lastRung = "lastRung"
@@ -62,14 +83,18 @@ final class Store: ObservableObject {
         static let welcomed = "welcomedMenuBar"
     }
 
-    init(file: HistoryFile = .standard) {
+    init(file: HistoryFile = .standard, lang: Lang? = nil) {
         self.file = file
+        forcedLang = lang
         let calendar = Calendar.autoupdatingCurrent
         hours = defaults.data(forKey: Keys.hours).flatMap { try? JSONDecoder().decode(WorkHours.self, from: $0) }
             ?? .standard
         targets = defaults.data(forKey: Keys.targets).flatMap { try? JSONDecoder().decode(Targets.self, from: $0) }
             ?? Targets()
         sound = defaults.object(forKey: Keys.sound) as? Bool ?? true
+        tuneID = defaults.string(forKey: Keys.tune) ?? Tunes.defaultID
+        volume = defaults.object(forKey: Keys.volume) as? Double ?? 0.7
+        language = defaults.string(forKey: Keys.language).flatMap(LanguageChoice.init(rawValue:)) ?? .system
         pausedDay = defaults.string(forKey: Keys.pausedDay).map(DayKey.init(rawValue:))
         let midnight = calendar.startOfDay(for: Date())
         let stored = (defaults.array(forKey: Keys.skipped) as? [Double]) ?? []
@@ -78,6 +103,8 @@ final class Store: ObservableObject {
         loadHistory()
     }
 
+    var lang: Lang { forcedLang ?? language.resolved }
+    var s: Strings { Strings(lang: lang) }
     var calendar: Calendar { .autoupdatingCurrent }
     var planner: Planner { Planner(hours: hours, calendar: calendar) }
     var today: DayKey { DayKey(now, calendar: calendar) }
@@ -85,6 +112,12 @@ final class Store: ObservableObject {
     var next: Date? { planner.upcoming(after: now, pausedDay: pausedDay, skipped: skipped, limit: 1).first }
     var todaySlots: [Date] { planner.slots(on: now) }
     var todayTotals: DayTotals { history.totals(on: now, calendar: calendar) }
+    var tunes: [Tune] { Tunes.custom + Tunes.system }
+    var tune: Tune? {
+        let all = tunes
+        return all.first { $0.id == tuneID } ?? all.first { $0.id == Tunes.defaultID } ?? all.first
+    }
+    var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev" }
 
     var welcomed: Bool {
         get { defaults.bool(forKey: Keys.welcomed) }
@@ -92,20 +125,18 @@ final class Store: ObservableObject {
     }
 
     var menuStatus: String {
-        guard let next else { return hours.isValid ? "Sem avisos marcados" : "Ajuste o horário no Rise" }
-        let when = Format.until(next, from: now, calendar: calendar)
-        return "Próximo aviso: \(Format.clock.string(from: next)) (\(when))"
+        guard let next else { return hours.isValid ? s.noReminders : s.fixHours }
+        return s.nextReminder(Format.clock.string(from: next), Format.until(next, from: now, calendar: calendar, s))
     }
 
     var todaySummary: String {
         let day = todayTotals
-        return "Hoje: \(Format.count(day.stood, "levantada", "levantadas")) · \(day.pushups) flexões · "
-            + "\(day.situps) abdominais"
+        return s.todaySummary(day.stood, day.pushups, day.situps)
     }
 
     func start() {
         activity = ProcessInfo.processInfo.beginActivity(
-            options: .userInitiatedAllowingIdleSystemSleep, reason: "Avisos para levantar")
+            options: .userInitiatedAllowingIdleSystemSleep, reason: "Stand-up reminders")
         let workspace = NSWorkspace.shared.notificationCenter
         observers.append(
             workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -133,17 +164,17 @@ final class Store: ObservableObject {
             self.snoozed = nil
             var ring = snoozed.ring
             ring.id = UUID()
-            ring.body = "Acabou o adiamento: bora levantar e fazer a série."
+            ring.body = s.snoozeOver
             present(ring)
         }
         if let slot = planner.due(at: now, after: lastRung, pausedDay: pausedDay, skipped: skipped) {
             lastRung = slot
             defaults.set(slot.timeIntervalSince1970, forKey: Keys.lastRung)
-            present(Ring(kind: .alarm, slot: slot, title: "Hora de levantar", body: message(for: slot)))
+            present(Ring(kind: .alarm, slot: slot, title: s.alarmTitle, body: message(for: slot)))
         }
     }
 
-    // Records the answer of the open panel; a test records nothing.
+    // Records the answer of the open card; a test records nothing.
     func checkIn(stood: Bool, pushups: Int, situps: Int) {
         guard let ring = ringing else { return }
         switch ring.kind {
@@ -171,12 +202,34 @@ final class Store: ObservableObject {
 
     func logNow() {
         if let ringing, ringing.kind == .alarm { return present(ringing) }
-        present(Ring(kind: .manual, slot: Date(), title: "Registrar agora", body: "Marque o que você fez fora do aviso."))
+        present(Ring(kind: .manual, slot: Date(), title: s.manualTitle, body: s.manualBody))
     }
 
     func test() {
         if let ringing, ringing.kind == .alarm { return present(ringing) }
-        present(Ring(kind: .test, slot: Date(), title: "Teste do Rise", body: "É assim que o aviso chega. O teste não grava nada."))
+        present(Ring(kind: .test, slot: Date(), title: s.testTitle, body: s.testBody))
+    }
+
+    func playAlarm() {
+        guard sound else { return }
+        music.play(tune?.url, volume: Float(volume), seconds: 45, loop: true)
+    }
+
+    func previewTune(restart: Bool = false) {
+        if music.isPlaying && !restart { return music.stop() }
+        music.play(tune?.url, volume: Float(volume), seconds: 15, loop: false)
+    }
+
+    func chooseTuneFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.message = s.pickMusic
+        NSApp.activate()
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            MainActor.assumeIsolated { self?.adoptTune(url) }
+        }
     }
 
     func remove(_ entry: Entry) {
@@ -243,6 +296,16 @@ final class Store: ObservableObject {
         ringing = ring
     }
 
+    private func adoptTune(_ url: URL) {
+        do {
+            let copy = try Tunes.copyIn(url)
+            tuneID = "file:\(copy.lastPathComponent)"
+            previewTune(restart: true)
+        } catch {
+            problem = s.musicFailed(error.localizedDescription)
+        }
+    }
+
     private func record(_ entry: Entry) {
         history.add(entry)
         saveHistory()
@@ -254,7 +317,7 @@ final class Store: ObservableObject {
         } catch {
             let aside = try? file.setAside()
             history = History()
-            historyProblem = "O histórico antigo não abriu e foi guardado em \(aside?.lastPathComponent ?? "outro arquivo")."
+            problem = s.unreadableHistory(aside?.lastPathComponent ?? "history-unreadable")
         }
     }
 
@@ -262,7 +325,7 @@ final class Store: ObservableObject {
         do {
             try file.save(history)
         } catch {
-            historyProblem = "Não consegui salvar o histórico: \(error.localizedDescription)"
+            problem = s.saveFailed(error.localizedDescription)
         }
     }
 
@@ -297,12 +360,7 @@ final class Store: ObservableObject {
     }
 
     private func message(for slot: Date) -> String {
-        let lines = [
-            "\(hours.interval) minutos sentado. Levanta, faz a série e estica as costas.",
-            "Bora levantar: flexões, abdominais e um alongamento no pescoço.",
-            "Levanta, faz a série e depois bebe um copo d'água.",
-            "Sai da cadeira: série feita e uma volta rápida pra descansar a vista.",
-        ]
+        let lines = s.messages(hours.interval)
         let minute = calendar.component(.hour, from: slot) * 60 + calendar.component(.minute, from: slot)
         return lines[(minute / max(hours.interval, 1)) % lines.count]
     }
@@ -311,48 +369,37 @@ final class Store: ObservableObject {
 enum Format {
     static let clock: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "pt_BR")
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
 
-    static let weekday: DateFormatter = {
+    private static func formatter(_ lang: Lang, _ template: String) -> DateFormatter {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "pt_BR")
-        formatter.dateFormat = "EEEE"
+        formatter.locale = lang.locale
+        formatter.setLocalizedDateFormatFromTemplate(template)
         return formatter
-    }()
+    }
 
-    static let dayTitle: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "pt_BR")
-        formatter.dateFormat = "EEEE, d 'de' MMMM"
-        return formatter
-    }()
+    static func weekday(_ date: Date, _ lang: Lang) -> String {
+        formatter(lang, "EEEE").string(from: date)
+    }
 
-    static let shortDay: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "pt_BR")
-        formatter.dateFormat = "EEE d"
-        return formatter
-    }()
+    static func dayTitle(_ date: Date, _ lang: Lang) -> String {
+        sentence(formatter(lang, "EEEEdMMMM").string(from: date))
+    }
 
     static func sentence(_ text: String) -> String {
         text.prefix(1).uppercased() + text.dropFirst()
     }
 
-    static func count(_ value: Int, _ one: String, _ many: String) -> String {
-        "\(value) \(value == 1 ? one : many)"
-    }
-
-    static func until(_ date: Date, from now: Date, calendar: Calendar) -> String {
+    static func until(_ date: Date, from now: Date, calendar: Calendar, _ s: Strings) -> String {
         if calendar.isDate(date, inSameDayAs: now) {
-            let minutes = max(1, Int((date.timeIntervalSince(now) / 60).rounded(.up)))
-            return minutes < 60 ? "em \(minutes) min" : "em \(minutes / 60) h \(String(format: "%02d", minutes % 60)) min"
+            return s.inMinutes(max(1, Int((date.timeIntervalSince(now) / 60).rounded(.up))))
         }
         if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) {
-            return "amanhã"
+            return s.tomorrow
         }
-        return weekday.string(from: date)
+        return weekday(date, s.lang)
     }
 }

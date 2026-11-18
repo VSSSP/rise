@@ -11,27 +11,28 @@ enum RiseMain {
             return arguments[index + 1]
         }
         let dark = arguments.contains("--dark")
+        let lang = value(after: "--lang").flatMap(Lang.init(rawValue:)) ?? .en
         if arguments.contains("--self-test") {
             app.setActivationPolicy(.prohibited)
             exit(SelfTest.run())
         }
         if let path = value(after: "--snapshot") {
             app.setActivationPolicy(.prohibited)
-            exit(SelfTest.snapshot(to: path, dark: dark, tab: value(after: "--tab") ?? "today"))
+            exit(SelfTest.snapshot(to: path, dark: dark, tab: value(after: "--tab") ?? "today", lang: lang))
         }
         if let path = value(after: "--snapshot-alert") {
             app.setActivationPolicy(.prohibited)
-            exit(SelfTest.snapshotAlert(to: path, dark: dark, kind: value(after: "--kind") ?? "alarm"))
+            exit(SelfTest.snapshotAlert(to: path, dark: dark, kind: value(after: "--kind") ?? "alarm", lang: lang))
         }
         if let index = arguments.firstIndex(of: "--log"), index + 2 < arguments.count,
             let pushups = Int(arguments[index + 1]), let situps = Int(arguments[index + 2])
         {
             do {
                 let day = try Store.log(pushups: pushups, situps: situps)
-                print("gravado: hoje \(Format.count(day.stood, "levantada", "levantadas")), \(day.pushups) flexões, \(day.situps) abdominais")
+                print("saved: today \(day.stood) stand-ups, \(day.pushups) push-ups, \(day.situps) sit-ups")
                 exit(0)
             } catch {
-                print("não gravou: \(error)")
+                print("not saved: \(error)")
                 exit(1)
             }
         }

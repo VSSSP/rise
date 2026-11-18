@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.mainMenu = MainMenu.make()
+        NSApp.mainMenu = MainMenu.make(store.s)
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func fill(_ menu: NSMenu) {
+        let s = store.s
         menu.removeAllItems()
         for line in [store.menuStatus, store.todaySummary] {
             let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
@@ -64,18 +65,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
         if store.ringing?.kind == .alarm {
-            menu.addItem(item("Responder o aviso…", #selector(logNow)))
+            menu.addItem(item(s.answerReminder, #selector(logNow)))
         } else {
-            menu.addItem(item("Registrar agora…", #selector(logNow)))
+            menu.addItem(item(s.logNowMenu, #selector(logNow)))
         }
-        let skip = item("Pular o próximo aviso", #selector(skipNext))
+        let skip = item(s.skipNextReminder, #selector(skipNext))
         skip.isEnabled = store.next != nil
         menu.addItem(skip)
-        menu.addItem(item(store.isPausedToday ? "Retomar hoje" : "Pausar hoje", #selector(togglePause)))
-        menu.addItem(item("Testar aviso", #selector(test)))
+        menu.addItem(item(store.isPausedToday ? s.resumeToday : s.pauseToday, #selector(togglePause)))
+        menu.addItem(item(s.testReminder, #selector(test)))
         menu.addItem(.separator())
-        menu.addItem(item("Abrir o Rise…", #selector(openWindow), key: ","))
-        menu.addItem(item("Sair do Rise", #selector(quit), key: "q"))
+        menu.addItem(item(s.openRise, #selector(openWindow), key: ","))
+        menu.addItem(item(s.quitRise, #selector(quit), key: "q"))
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -121,21 +122,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 @MainActor
 enum MainMenu {
-    static func make() -> NSMenu {
+    static func make(_ s: Strings) -> NSMenu {
         let appMenu = NSMenu()
         appMenu.addItem(
-            withTitle: "Sobre o Rise", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            withTitle: s.aboutRise, action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Encerrar o Rise", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        let editMenu = NSMenu(title: "Editar")
-        editMenu.addItem(withTitle: "Copiar", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Colar", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        let windowMenu = NSMenu(title: "Janela")
-        windowMenu.addItem(withTitle: "Minimizar", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Fechar", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        appMenu.addItem(withTitle: s.quitRise, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let editMenu = NSMenu(title: s.edit)
+        editMenu.addItem(withTitle: s.copy, action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: s.paste, action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        let windowMenu = NSMenu(title: s.window)
+        windowMenu.addItem(withTitle: s.minimize, action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: s.close, action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         let bar = NSMenu()
-        for (title, menu) in [("Rise", appMenu), ("Editar", editMenu), ("Janela", windowMenu)] {
+        for (title, menu) in [("Rise", appMenu), (s.edit, editMenu), (s.window, windowMenu)] {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.submenu = menu
             bar.addItem(item)

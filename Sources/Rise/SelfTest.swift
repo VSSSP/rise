@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import RiseCore
 import SwiftUI
@@ -9,20 +10,26 @@ enum SelfTest {
         var failures: [String] = []
         func check(_ ok: Bool, _ what: String) { if !ok { failures.append(what) } }
 
-        let store = Store(file: scratchFile(sample: true))
-        for tab in Tab.allCases {
-            let size = fit(ContentView(store: store, tab: tab))
-            check(size.width >= 440 && size.height > 250, "tab \(tab.rawValue) is \(size)")
+        var card = NSSize.zero
+        for lang in [Lang.en, .pt] {
+            let store = Store(file: scratchFile(sample: true), lang: lang)
+            for tab in Tab.allCases {
+                let size = fit(ContentView(store: store, tab: tab))
+                check(size.width <= 461 && size.height > 250, "\(lang) tab \(tab) is \(size)")
+            }
+            let ring = Ring(kind: .alarm, slot: Date(), title: store.s.alarmTitle, body: store.s.messages(45)[0])
+            card = fit(CheckInView(store: store, ring: ring))
+            check(card.width <= 481 && card.height > 200, "\(lang) check-in card is \(card)")
+            let menu = NSMenu()
+            let delegate = AppDelegate(store: store)
+            delegate.fill(menu)
+            let titles = menu.items.map(\.title)
+            check(titles.contains(store.s.logNowMenu) && titles.contains(store.s.quitRise), "\(lang) menu is \(titles)")
         }
-        let ring = Ring(kind: .alarm, slot: Date(), title: "Hora de levantar", body: "Teste")
-        let card = fit(CheckInView(store: store, ring: ring))
-        check(card.width >= 440 && card.height > 200, "check-in card is \(card)")
-
-        let menu = NSMenu()
-        let delegate = AppDelegate(store: store)
-        delegate.fill(menu)
-        let titles = menu.items.map(\.title)
-        check(titles.contains("Registrar agora…") && titles.contains("Sair do Rise"), "menu is \(titles)")
+        let store = Store(file: scratchFile(sample: false), lang: .en)
+        let tune = store.tune
+        check(tune != nil && (try? AVAudioPlayer(contentsOf: tune!.url)) != nil, "no playable music: \(String(describing: tune))")
+        check(Tunes.system.contains { $0.id == Tunes.defaultID }, "the default music is missing")
         if Bundle.main.bundleIdentifier != nil {
             check(Bundle.main.object(forInfoDictionaryKey: "LSUIElement") as? Bool == true, "the Dock icon is on")
         }
@@ -45,7 +52,7 @@ enum SelfTest {
     private static func rules() -> [String] {
         var failures: [String] = []
         let file = scratchFile(sample: false)
-        let store = Store(file: file)
+        let store = Store(file: file, lang: .en)
         let base = Calendar.current.date(bySettingHour: 9, minute: 45, second: 0, of: Date())!
         let slot = { (step: Int) in base.addingTimeInterval(Double(step) * 45 * 60) }
 
@@ -73,21 +80,20 @@ enum SelfTest {
         return failures
     }
 
-    static func snapshot(to path: String, dark: Bool, tab: String) -> Int32 {
+    static func snapshot(to path: String, dark: Bool, tab: String, lang: Lang) -> Int32 {
         let pick: Tab = ["history": .history, "settings": .settings][tab] ?? .today
-        let store = Store(file: scratchFile(sample: true))
+        let store = Store(file: scratchFile(sample: true), lang: lang)
         let view = ContentView(store: store, tab: pick).background(Color(nsColor: .windowBackgroundColor))
         return render(view, to: path, dark: dark)
     }
 
-    static func snapshotAlert(to path: String, dark: Bool, kind: String) -> Int32 {
-        let store = Store(file: scratchFile(sample: true))
+    static func snapshotAlert(to path: String, dark: Bool, kind: String, lang: Lang) -> Int32 {
+        let store = Store(file: scratchFile(sample: true), lang: lang)
+        let s = store.s
         let ring =
             kind == "manual"
-            ? Ring(kind: .manual, slot: Date(), title: "Registrar agora", body: "Marque o que você fez fora do aviso.")
-            : Ring(
-                kind: .alarm, slot: Date(), title: "Hora de levantar",
-                body: "45 minutos sentado. Levanta, faz a série e estica as costas.")
+            ? Ring(kind: .manual, slot: Date(), title: s.manualTitle, body: s.manualBody)
+            : Ring(kind: .alarm, slot: Date(), title: s.alarmTitle, body: s.messages(45)[0])
         return render(CheckInView(store: store, ring: ring).padding(20), to: path, dark: dark)
     }
 

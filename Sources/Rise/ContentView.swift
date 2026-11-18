@@ -1,10 +1,16 @@
 import RiseCore
 import SwiftUI
 
-enum Tab: String, CaseIterable {
-    case today = "Hoje"
-    case history = "Histórico"
-    case settings = "Ajustes"
+enum Tab: CaseIterable {
+    case today, history, settings
+
+    func title(_ s: Strings) -> String {
+        switch self {
+        case .today: return s.tabToday
+        case .history: return s.tabHistory
+        case .settings: return s.tabSettings
+        }
+    }
 }
 
 struct ContentView: View {
@@ -13,17 +19,17 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Picker("Seção", selection: $tab) {
-                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            Picker(store.s.section, selection: $tab) {
+                ForEach(Tab.allCases, id: \.self) { Text($0.title(store.s)).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             switch tab {
             case .today: TodayTab(store: store)
             case .history: HistoryTab(store: store)
-            case .settings: SettingsForm(store: store)
+            case .settings: SettingsForm(store: store, music: store.music)
             }
-            if let problem = store.historyProblem {
+            if let problem = store.problem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -47,12 +53,12 @@ struct TodayTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             StatusCard(store: store)
-            TotalsRow(totals: store.todayTotals)
+            TotalsRow(totals: store.todayTotals, s: store.s)
             if !store.todaySlots.isEmpty {
                 TodayGrid(store: store)
             }
             Actions(store: store)
-            Label("O Rise fica na barra de menus, lá em cima. Fechar esta janela não desliga os avisos.", systemImage: "menubar.arrow.up.rectangle")
+            Label(store.s.menuBarHint, systemImage: "menubar.arrow.up.rectangle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -75,7 +81,7 @@ struct StatusCard: View {
             Text(detail)
                 .font(.callout)
                 .opacity(0.92)
-            Text("A cada aviso: levantar, \(store.targets.pushups) flexões e \(store.targets.situps) abdominais.")
+            Text(store.s.eachReminder(store.targets.pushups, store.targets.situps))
                 .font(.footnote)
                 .opacity(0.85)
                 .padding(.top, 4)
@@ -87,9 +93,9 @@ struct StatusCard: View {
     }
 
     private var caption: String {
-        guard store.hours.isValid else { return "HORÁRIO INVÁLIDO" }
-        guard store.next != nil else { return "SEM AVISOS" }
-        return store.isPausedToday ? "PAUSADO HOJE · PRÓXIMO AVISO" : "PRÓXIMO AVISO"
+        guard store.hours.isValid else { return store.s.invalidHoursCaption }
+        guard store.next != nil else { return store.s.noRemindersCaption }
+        return store.isPausedToday ? store.s.pausedCaption : store.s.nextCaption
     }
 
     private var time: String {
@@ -97,28 +103,29 @@ struct StatusCard: View {
     }
 
     private var detail: String {
-        guard store.hours.isValid else { return "O intervalo não cabe entre o início e o fim." }
-        guard let next = store.next else { return "Escolha pelo menos um dia em Ajustes." }
-        return Format.until(next, from: store.now, calendar: store.calendar)
+        guard store.hours.isValid else { return store.s.intervalDoesNotFit }
+        guard let next = store.next else { return store.s.pickADay }
+        return Format.until(next, from: store.now, calendar: store.calendar, store.s)
     }
 }
 
 struct TotalsRow: View {
     let totals: DayTotals
+    let s: Strings
 
     var body: some View {
         HStack(spacing: 10) {
-            tile("Levantadas", totals.stood, "figure.stand", nil)
-            tile("Flexões", totals.pushups, "figure.strengthtraining.functional", Series.pushups.color)
-            tile("Abdominais", totals.situps, "figure.core.training", Series.situps.color)
+            tile(s.standUpsTitle, totals.stood, "figure.stand", standColor)
+            tile(s.pushupsTitle, totals.pushups, "figure.strengthtraining.functional", Series.pushups.color)
+            tile(s.situpsTitle, totals.situps, "figure.core.training", Series.situps.color)
         }
     }
 
-    private func tile(_ title: String, _ value: Int, _ symbol: String, _ mark: Color?) -> some View {
+    private func tile(_ title: String, _ value: Int, _ symbol: String, _ mark: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: symbol)
-                    .foregroundStyle(mark ?? Color.secondary)
+                    .foregroundStyle(mark)
                 Text(title)
                     .foregroundStyle(.secondary)
             }
@@ -139,14 +146,14 @@ struct TodayGrid: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(store.isPausedToday ? "Avisos de hoje (pausado)" : "Avisos de hoje")
+            Text(store.isPausedToday ? store.s.todayRemindersPaused : store.s.todayReminders)
                 .font(.headline)
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(store.todaySlots, id: \.self) { slot in
                     chip(slot)
                 }
             }
-            Text("✓ respondido · ✕ sem resposta · toque num horário futuro para pular ou voltar a tocar.")
+            Text(store.s.slotLegend)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -185,9 +192,10 @@ struct TodayGrid: View {
     }
 
     private func help(_ entry: Entry?, _ skipped: Bool) -> String {
-        guard let entry else { return skipped ? "Voltar a tocar" : "Pular este" }
-        guard entry.answered else { return "Ficou sem resposta" }
-        return "\(entry.stood ? "Levantou" : "Não levantou") · \(entry.pushups) flexões · \(entry.situps) abdominais"
+        let s = store.s
+        guard let entry else { return skipped ? s.bringBack : s.skipThis }
+        guard entry.answered else { return s.noAnswer }
+        return "\(entry.stood ? s.stood : s.didNotStand) · \(s.pushups(entry.pushups)) · \(s.situps(entry.situps))"
     }
 }
 
@@ -195,18 +203,19 @@ struct Actions: View {
     @ObservedObject var store: Store
 
     var body: some View {
+        let s = store.s
         Grid(horizontalSpacing: 10, verticalSpacing: 10) {
             GridRow {
                 Button {
                     store.logNow()
                 } label: {
-                    Label("Registrar agora", systemImage: "square.and.pencil").frame(maxWidth: .infinity)
+                    Label(s.logNow, systemImage: "square.and.pencil").frame(maxWidth: .infinity)
                 }
                 .keyboardShortcut(.defaultAction)
                 Button {
                     store.skipNext()
                 } label: {
-                    Label("Pular o próximo", systemImage: "forward.end").frame(maxWidth: .infinity)
+                    Label(s.skipNext, systemImage: "forward.end").frame(maxWidth: .infinity)
                 }
                 .disabled(store.next == nil)
             }
@@ -215,7 +224,7 @@ struct Actions: View {
                     store.togglePauseToday()
                 } label: {
                     Label(
-                        store.isPausedToday ? "Retomar hoje" : "Pausar hoje",
+                        store.isPausedToday ? s.resumeToday : s.pauseToday,
                         systemImage: store.isPausedToday ? "play.fill" : "pause.fill"
                     )
                     .frame(maxWidth: .infinity)
@@ -223,7 +232,7 @@ struct Actions: View {
                 Button {
                     store.test()
                 } label: {
-                    Label("Testar aviso", systemImage: "bell").frame(maxWidth: .infinity)
+                    Label(s.testReminder, systemImage: "bell").frame(maxWidth: .infinity)
                 }
             }
         }
@@ -233,59 +242,92 @@ struct Actions: View {
 
 struct SettingsForm: View {
     @ObservedObject var store: Store
-    private let days = [(2, "Seg"), (3, "Ter"), (4, "Qua"), (5, "Qui"), (6, "Sex"), (7, "Sáb"), (1, "Dom")]
+    @ObservedObject var music: MusicPlayer
 
     var body: some View {
+        let s = store.s
         VStack(alignment: .leading, spacing: 12) {
-            Text("Expediente")
+            Text(s.workHours)
                 .font(.headline)
             HStack {
-                DatePicker("Início", selection: minutes(\.start), displayedComponents: .hourAndMinute)
+                DatePicker(s.start, selection: minutes(\.start), displayedComponents: .hourAndMinute)
                 Spacer()
-                DatePicker("Fim", selection: minutes(\.end), displayedComponents: .hourAndMinute)
+                DatePicker(s.end, selection: minutes(\.end), displayedComponents: .hourAndMinute)
             }
             Stepper(value: $store.hours.interval, in: 15...120, step: 5) {
-                Text("Avisar a cada \(store.hours.interval) min")
+                Text(s.every(store.hours.interval))
             }
             HStack(spacing: 6) {
-                ForEach(days, id: \.0) { day, name in
+                ForEach(s.days, id: \.0) { day, name in
                     Toggle(name, isOn: weekday(day))
                         .toggleStyle(.button)
                 }
             }
             Divider()
-            Text("Série de cada aviso")
+            Text(s.setTitle)
                 .font(.headline)
             Stepper(value: $store.targets.pushups, in: 1...200) {
-                Text("\(store.targets.pushups) flexões")
+                Text(s.pushups(store.targets.pushups))
             }
             Stepper(value: $store.targets.situps, in: 1...200) {
-                Text("\(store.targets.situps) abdominais")
+                Text(s.situps(store.targets.situps))
             }
-            Text("No aviso dá para mudar o número antes de marcar Fiz.")
+            Text(s.setHint)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Divider()
-            Toggle("Tocar som no aviso", isOn: $store.sound)
-            Toggle("Abrir ao iniciar a sessão", isOn: loginBinding)
+            Text(s.musicTitle)
+                .font(.headline)
+            Toggle(s.playMusic, isOn: $store.sound)
+            HStack {
+                Picker(s.music, selection: $store.tuneID) {
+                    ForEach(store.tunes) { Text($0.title).tag($0.id) }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 210)
+                Button(music.isPlaying ? s.stop : s.listen) { store.previewTune() }
+                Button(s.useFile) { store.chooseTuneFile() }
+            }
+            .disabled(!store.sound)
+            HStack {
+                Image(systemName: "speaker.fill").foregroundStyle(.secondary)
+                Slider(value: $store.volume, in: 0.1...1)
+                Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
+            }
+            .disabled(!store.sound)
+            .accessibilityLabel(s.volume)
+            Divider()
+            Picker(s.language, selection: $store.language) {
+                Text(s.automatic).tag(LanguageChoice.system)
+                Text("English").tag(LanguageChoice.en)
+                Text("Português").tag(LanguageChoice.pt)
+            }
+            .frame(maxWidth: 260)
+            Toggle(s.openAtLogin, isOn: loginBinding)
                 .disabled(store.login == .unavailable)
             switch store.login {
             case .needsApproval:
                 HStack {
-                    Text("Falta aprovar o Rise em Itens de Início.")
+                    Text(s.needsApproval)
                         .font(.caption)
-                    Button("Abrir Ajustes") { store.openLoginSettings() }
+                    Button(s.openSettings) { store.openLoginSettings() }
                         .controlSize(.small)
                 }
             case .unavailable:
-                Text("Instale o Rise em Aplicativos para ele abrir sozinho.")
+                Text(s.installFirst)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             default:
                 EmptyView()
             }
-            Button("Mostrar o arquivo do histórico") { store.openHistoryFolder() }
-                .controlSize(.small)
+            HStack {
+                Button(s.showHistoryFile) { store.openHistoryFolder() }
+                    .controlSize(.small)
+                Spacer()
+                Text("Rise \(store.version)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

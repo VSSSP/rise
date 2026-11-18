@@ -4,15 +4,18 @@ import RiseCore
 import SwiftUI
 
 // Chart colors validated for both modes; text never wears them.
-enum Series: String, CaseIterable {
-    case pushups = "Flexões"
-    case situps = "Abdominais"
+enum Series: CaseIterable {
+    case pushups, situps
 
     var color: Color {
         switch self {
         case .pushups: return dynamicColor(light: 0x2A78D6, dark: 0x3987E5)
         case .situps: return dynamicColor(light: 0xEB6834, dark: 0xD95926)
         }
+    }
+
+    func title(_ s: Strings) -> String {
+        self == .pushups ? s.pushupsTitle : s.situpsTitle
     }
 
     func value(_ day: DayTotals) -> Int {
@@ -32,63 +35,82 @@ func dynamicColor(light: UInt32, dark: UInt32) -> Color {
         })
 }
 
-private let brazil = Locale(identifier: "pt_BR")
-
 struct HistoryTab: View {
     @ObservedObject var store: Store
     @State private var span = 7
 
     var body: some View {
+        let s = store.s
         let days = store.history.days(endingOn: store.now, count: span, calendar: store.calendar)
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Flexões e abdominais por dia")
+                Text(s.chartExercise)
                     .font(.headline)
                 Spacer()
-                Picker("Período", selection: $span) {
-                    Text("7 dias").tag(7)
-                    Text("30 dias").tag(30)
+                Picker(s.period, selection: $span) {
+                    Text(s.sevenDays).tag(7)
+                    Text(s.thirtyDays).tag(30)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 150)
+                .frame(width: 160)
             }
-            ExerciseChart(days: days, span: span, calendar: store.calendar)
-            Text("Levantadas por dia")
+            ExerciseChart(days: days, span: span, calendar: store.calendar, s: s)
+            Text(s.chartStandUps)
                 .font(.headline)
-            StandChart(days: days, span: span)
-            Text("Registros")
+            StandChart(days: days, span: span, calendar: store.calendar, s: s)
+            Text(s.entries)
                 .font(.headline)
             EntryList(store: store)
         }
     }
 }
 
-private func axisLabel(_ span: Int) -> Date.FormatStyle {
+private func axisLabel(_ span: Int, _ lang: Lang) -> Date.FormatStyle {
     let style: Date.FormatStyle =
         span > 7 ? .dateTime.day().month(.defaultDigits) : .dateTime.weekday(.abbreviated).day()
-    return style.locale(brazil)
+    return style.locale(lang.locale)
+}
+
+private struct Hover: ChartContent {
+    let day: DayTotals
+    let s: Strings
+
+    var body: some ChartContent {
+        RuleMark(x: .value(s.day, day.day, unit: .day))
+            .foregroundStyle(Color.secondary.opacity(0.5))
+            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            .annotation(
+                position: .top, spacing: 4,
+                overflowResolution: AnnotationOverflowResolution(x: .fit(to: .chart), y: .disabled)
+            ) {
+                DayTip(day: day, s: s)
+            }
+    }
 }
 
 struct ExerciseChart: View {
     let days: [DayTotals]
     let span: Int
     let calendar: Calendar
+    let s: Strings
     @State private var picked: Date?
 
     var body: some View {
         Chart {
-            selection
-            bars
+            lines
+            if let day = selected { Hover(day: day, s: s) }
         }
         .chartForegroundStyleScale([
-            Series.pushups.rawValue: Series.pushups.color, Series.situps.rawValue: Series.situps.color,
+            Series.pushups.title(s): Series.pushups.color, Series.situps.title(s): Series.situps.color,
         ])
+        .chartSymbolScale([Series.pushups.title(s): .circle, Series.situps.title(s): .square])
         .chartLegend(position: .top, alignment: .leading, spacing: 8)
+        .chartYScale(domain: .automatic(includesZero: true))
         .chartXSelection(value: $picked)
         .chartXAxis {
             AxisMarks(values: .stride(by: .day, count: span > 7 ? 5 : 1)) { _ in
-                AxisValueLabel(format: axisLabel(span), centered: true)
+                AxisValueLabel(format: axisLabel(span, s.lang), centered: false)
             }
         }
         .chartYAxis {
@@ -97,41 +119,47 @@ struct ExerciseChart: View {
                 AxisValueLabel()
             }
         }
-        .environment(\.locale, brazil)
-        .frame(height: 180)
-        .accessibilityLabel("Flexões e abdominais por dia")
+        .frame(height: 190)
+        .accessibilityLabel(s.chartExercise)
     }
 
     private struct Point: Identifiable {
         let day: Date
         let series: String
         let value: Int
+        let last: Bool
+        let higher: Bool
         var id: String { "\(day.timeIntervalSince1970)-\(series)" }
     }
 
     private var points: [Point] {
-        days.flatMap { day in Series.allCases.map { Point(day: day.day, series: $0.rawValue, value: $0.value(day)) } }
-    }
-
-    @ChartContentBuilder private var bars: some ChartContent {
-        ForEach(points) { point in
-            BarMark(x: .value("Dia", point.day, unit: .day), y: .value("Quantidade", point.value))
-                .foregroundStyle(by: .value("Exercício", point.series))
-                .position(by: .value("Exercício", point.series))
-                .cornerRadius(3)
+        let lastDay = days.last?.day
+        return days.flatMap { day in
+            Series.allCases.map { series in
+                let other = series == .pushups ? day.situps : day.pushups
+                return Point(
+                    day: day.day, series: series.title(s), value: series.value(day), last: day.day == lastDay,
+                    higher: series.value(day) >= other)
+            }
         }
     }
 
-    @ChartContentBuilder private var selection: some ChartContent {
-        if let day = selected {
-            RuleMark(x: .value("Dia", day.day, unit: .day))
-                .foregroundStyle(Color.secondary.opacity(0.18))
-                .lineStyle(StrokeStyle(lineWidth: span > 7 ? 8 : 34))
-                .annotation(
-                    position: .top, spacing: 4,
-                    overflowResolution: AnnotationOverflowResolution(x: .fit(to: .chart), y: .disabled)
-                ) {
-                    DayTip(day: day)
+    @ChartContentBuilder private var lines: some ChartContent {
+        ForEach(points) { point in
+            LineMark(x: .value(s.day, point.day, unit: .day), y: .value(s.amount, point.value))
+                .foregroundStyle(by: .value(s.exercise, point.series))
+                .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                .interpolationMethod(.monotone)
+        }
+        ForEach(points) { point in
+            PointMark(x: .value(s.day, point.day, unit: .day), y: .value(s.amount, point.value))
+                .foregroundStyle(by: .value(s.exercise, point.series))
+                .symbol(by: .value(s.exercise, point.series))
+                .symbolSize(span > 7 ? 40 : 64)
+                .annotation(position: point.higher ? .top : .bottom, spacing: 4) {
+                    if point.last {
+                        Text("\(point.value)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    }
                 }
         }
     }
@@ -144,16 +172,17 @@ struct ExerciseChart: View {
 
 private struct DayTip: View {
     let day: DayTotals
+    let s: Strings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(Format.sentence(Format.dayTitle.string(from: day.day)))
+            Text(Format.dayTitle(day.day, s.lang))
                 .font(.caption.weight(.bold))
-            line(Series.pushups.color, "\(day.pushups) flexões")
-            line(Series.situps.color, "\(day.situps) abdominais")
-            line(standColor, Format.count(day.stood, "levantada", "levantadas"))
+            line(Series.pushups.color, s.pushups(day.pushups))
+            line(Series.situps.color, s.situps(day.situps))
+            line(standColor, s.standUps(day.stood))
             if day.missed > 0 {
-                Text(Format.count(day.missed, "aviso sem resposta", "avisos sem resposta"))
+                Text(s.missed(day.missed))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -174,21 +203,33 @@ private struct DayTip: View {
 struct StandChart: View {
     let days: [DayTotals]
     let span: Int
+    let calendar: Calendar
+    let s: Strings
+    @State private var picked: Date?
 
     var body: some View {
-        Chart(days) { day in
-            BarMark(x: .value("Dia", day.day, unit: .day), y: .value("Levantadas", day.stood))
-                .foregroundStyle(standColor)
-                .cornerRadius(3)
-                .annotation(position: .top, spacing: 2) {
-                    if span <= 7 && day.stood > 0 {
-                        Text("\(day.stood)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+        Chart {
+            ForEach(days) { day in
+                LineMark(x: .value(s.day, day.day, unit: .day), y: .value(s.standUpsTitle, day.stood))
+                    .foregroundStyle(standColor)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.monotone)
+                PointMark(x: .value(s.day, day.day, unit: .day), y: .value(s.standUpsTitle, day.stood))
+                    .foregroundStyle(standColor)
+                    .symbolSize(span > 7 ? 40 : 64)
+                    .annotation(position: .top, spacing: 3) {
+                        if span <= 7 && day.stood > 0 {
+                            Text("\(day.stood)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        }
                     }
-                }
+            }
+            if let day = selected { Hover(day: day, s: s) }
         }
+        .chartYScale(domain: .automatic(includesZero: true))
+        .chartXSelection(value: $picked)
         .chartXAxis {
             AxisMarks(values: .stride(by: .day, count: span > 7 ? 5 : 1)) { _ in
-                AxisValueLabel(format: axisLabel(span), centered: true)
+                AxisValueLabel(format: axisLabel(span, s.lang), centered: false)
             }
         }
         .chartYAxis {
@@ -197,9 +238,13 @@ struct StandChart: View {
                 AxisValueLabel()
             }
         }
-        .environment(\.locale, brazil)
-        .frame(height: 90)
-        .accessibilityLabel("Levantadas por dia")
+        .frame(height: 110)
+        .accessibilityLabel(s.chartStandUps)
+    }
+
+    private var selected: DayTotals? {
+        guard let picked else { return nil }
+        return days.first { calendar.isDate($0.day, inSameDayAs: picked) }
     }
 }
 
@@ -208,10 +253,11 @@ struct EntryList: View {
     @State private var doomed: Entry?
 
     var body: some View {
+        let s = store.s
         let groups = grouped()
         Group {
             if groups.isEmpty {
-                Text("Nada registrado ainda. Responda um aviso ou use Registrar agora.")
+                Text(s.nothingYet)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
@@ -220,11 +266,11 @@ struct EntryList: View {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(groups, id: \.day) { group in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(Format.sentence(Format.dayTitle.string(from: group.day)))
+                                Text(Format.dayTitle(group.day, s.lang))
                                     .font(.caption.weight(.bold))
                                     .foregroundStyle(.secondary)
                                 ForEach(group.entries) { entry in
-                                    row(entry)
+                                    row(entry, s)
                                 }
                             }
                         }
@@ -235,9 +281,9 @@ struct EntryList: View {
             }
         }
         .confirmationDialog(
-            "Apagar este registro?", isPresented: Binding(get: { doomed != nil }, set: { if !$0 { doomed = nil } })
+            s.deleteQuestion, isPresented: Binding(get: { doomed != nil }, set: { if !$0 { doomed = nil } })
         ) {
-            Button("Apagar", role: .destructive) {
+            Button(s.delete, role: .destructive) {
                 if let doomed { store.remove(doomed) }
                 doomed = nil
             }
@@ -257,7 +303,7 @@ struct EntryList: View {
         return groups
     }
 
-    private func row(_ entry: Entry) -> some View {
+    private func row(_ entry: Entry, _ s: Strings) -> some View {
         HStack(spacing: 10) {
             Text(Format.clock.string(from: entry.at))
                 .font(.system(.callout, design: .rounded).weight(.semibold))
@@ -265,14 +311,14 @@ struct EntryList: View {
                 .frame(width: 44, alignment: .leading)
             Image(systemName: entry.source == .alarm ? "bell" : "square.and.pencil")
                 .foregroundStyle(.secondary)
-                .help(entry.source == .alarm ? "Aviso" : "Registrado à mão")
+                .help(entry.source == .alarm ? s.fromReminder : s.byHand)
                 .frame(width: 18)
             if entry.answered {
-                mark(entry.stood, entry.stood ? "levantou" : "não levantou")
-                mark(entry.pushups > 0, entry.pushups > 0 ? "\(entry.pushups) flexões" : "sem flexões")
-                mark(entry.situps > 0, entry.situps > 0 ? "\(entry.situps) abdominais" : "sem abdominais")
+                mark(entry.stood, entry.stood ? s.stood : s.didNotStand)
+                mark(entry.pushups > 0, entry.pushups > 0 ? s.pushups(entry.pushups) : s.noPushups)
+                mark(entry.situps > 0, entry.situps > 0 ? s.situps(entry.situps) : s.noSitups)
             } else {
-                Label("Sem resposta", systemImage: "questionmark.circle")
+                Label(s.noAnswer, systemImage: "questionmark.circle")
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
@@ -282,7 +328,7 @@ struct EntryList: View {
         .padding(.horizontal, 8)
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contextMenu {
-            Button("Apagar registro", role: .destructive) { doomed = entry }
+            Button(s.deleteEntry, role: .destructive) { doomed = entry }
         }
     }
 

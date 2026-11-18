@@ -1,12 +1,14 @@
-# Rise: stand-up reminder with push-ups and sit-ups for macOS
+# Rise: stand-up reminder and home workout tracker for macOS
 
-**Rise** is a free and open-source **macOS menu bar app** that reminds you to **stand up every 45 minutes** while you
-work, and asks whether you did your **push-ups and sit-ups**. Every answer goes into a **workout history with line
-charts**, so you can see how much you moved each day instead of sitting all day at the desk.
+**Rise** is a free and open-source **macOS menu bar app** that reminds you to **stand up at the interval you choose**
+(every 45 minutes by default) while you work, and asks whether you did **your set of exercises**: push-ups, sit-ups,
+squats, plank or any of 15 bodyweight exercises you can do at home or in the office. Every answer goes into a
+**workout history with line charts**, so you can see how much you moved each day instead of sitting all day at the
+desk.
 
 🇧🇷 [Leia em português](README.pt-BR.md)
 
-<p align="center"><img src="docs/images/card-en.png" width="480" alt="Rise check-in card: stood up, push-ups and sit-ups, each marked Done or Not done"></p>
+<p align="center"><img src="docs/images/card-en.png" width="480" alt="Rise check-in card: stood up, push-ups, sit-ups and squats, each marked Done or Not done"></p>
 
 ## Download
 
@@ -21,15 +23,22 @@ Silicon and Intel Macs, macOS 14 Sonoma or later.
 
 ## Features
 
-- **Stand-up reminder** every 45 minutes in work hours (start, end, interval and weekdays are configurable).
-- **A check-in card that stays** on screen until you answer: over every app, Space and full-screen window, and it
-  never steals the keyboard focus.
-- **Push-up and sit-up tracker**: mark *Done* or *Not done* for standing up, push-ups and sit-ups, and adjust the
-  count before saving. *All done*, *Did nothing* and *Snooze 5 min* are one click.
+- **Stand-up reminder** at the interval you choose (45 minutes by default) in your work hours; start, end, interval
+  and weekdays are all configurable.
+- **First-run setup**: the first time Rise opens it asks for your hours, your exercises, your alert and your music.
+- **Your own exercise set**, up to 7 per reminder, from a catalog of 15 home exercises with the muscles each one
+  works: push-ups (chest, shoulders and triceps), sit-ups (abs), squats, lunges, glute bridges, calf raises, chair
+  dips, jumping jacks, burpees, mountain climbers, leg raises, supermans, plank, wall sit and stretching. Reps or
+  seconds, your number for each.
+- **A check-in card that waits** for your answer: mark *Done* or *Not done* for standing up and each exercise, and
+  adjust the count. *All done*, *Did nothing* and *Snooze 5 min* are one click. It never steals the keyboard focus.
+- **Four alert styles**: a card in the corner, a card in the middle of the screen, full screen (the screen dims
+  until you answer) or discreet (only the menu bar icon and the music).
 - **Music on the reminder**: pick one of the musical ringtones built into macOS or use your own song, with a volume
   control and a preview.
-- **History with line charts** for 7 and 30 days (push-ups, sit-ups and stand-ups per day) and the full log of
+- **History with line charts** for 7 and 30 days (reps, timed exercises and stand-ups per day) and the full log of
   every reminder, including the ones left without an answer. A wrong entry can be deleted.
+- **Themes**: Sunrise, Ocean, Forest, Grape, Graphite and Ember, in light, dark or automatic mode.
 - **Menu bar menu**: next reminder, today's totals, log a set by hand, skip the next reminder, pause for today.
 - **English and Brazilian Portuguese**, automatic or chosen in Settings.
 - **Private**: no account, no network, no tracking. Everything stays on your Mac in
@@ -39,8 +48,11 @@ Silicon and Intel Macs, macOS 14 Sonoma or later.
 ## Screenshots
 
 <p align="center">
-  <img src="docs/images/today-en.png" width="380" alt="Rise Today tab: next reminder, today's stand-ups, push-ups and sit-ups">
-  <img src="docs/images/history-en.png" width="380" alt="Rise History tab: line charts of push-ups, sit-ups and stand-ups per day">
+  <img src="docs/images/today-en.png" width="380" alt="Rise Today tab: next reminder and today's stand-ups, push-ups, sit-ups and squats">
+  <img src="docs/images/history-en.png" width="380" alt="Rise History tab: line charts of reps, plank seconds and stand-ups per day">
+</p>
+<p align="center">
+  <img src="docs/images/setup-en.png" width="380" alt="Rise first-run setup: work hours, exercises, alert style and music">
 </p>
 
 ## Build from source

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// The check-in card: in a corner, in the middle or over a dimmed screen, and it stays until answered.
+// The check-in card, in a corner, centered or over a dimmed screen, stays until answered.
 @MainActor
 final class CheckInPanel {
     private let store: Store

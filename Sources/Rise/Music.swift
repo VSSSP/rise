@@ -7,7 +7,7 @@ struct Tune: Identifiable, Hashable {
     let url: URL
 }
 
-// The musical ringtones macOS ships, plus songs the owner adds; nothing is copied out of the system.
+// The musical ringtones macOS ships plus songs the owner adds; nothing leaves the system.
 enum Tunes {
     static let folder = URL(
         fileURLWithPath: "/System/Library/PrivateFrameworks/ToneLibrary.framework/Versions/A/Resources/Ringtones")

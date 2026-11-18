@@ -48,7 +48,7 @@ struct Exercise: Identifiable, Hashable {
     }
 }
 
-// One exercise of the owner's set: how many per reminder, and the chart color it keeps while chosen.
+// One exercise of the owner's set: how many per reminder and the chart color it keeps.
 struct PlanItem: Codable, Equatable, Identifiable {
     var id: String
     var target: Int
